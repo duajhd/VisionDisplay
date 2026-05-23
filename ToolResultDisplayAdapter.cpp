@@ -17,8 +17,45 @@ namespace {
 
 constexpr double pi = 3.14159265358979323846;
 
+bool isFiniteEdgePoint(const VisionTools::EdgePoint& point)
+{
+    return std::isfinite(point.x)
+        && std::isfinite(point.y)
+        && std::isfinite(point.nx)
+        && std::isfinite(point.ny)
+        && std::isfinite(point.response)
+        && std::isfinite(point.position1D)
+        && std::isfinite(point.subIndex);
+}
+
+bool isFiniteCaliperRegion(const VisionTools::CaliperRegion& region)
+{
+    return std::isfinite(region.centerX)
+        && std::isfinite(region.centerY)
+        && std::isfinite(region.width)
+        && std::isfinite(region.length)
+        && std::isfinite(region.angleDeg)
+        && region.width > 0.0
+        && region.length > 0.0;
+}
+
+bool isFiniteLineModel(const VisionTools::LineModel& line)
+{
+    return std::isfinite(line.x1)
+        && std::isfinite(line.y1)
+        && std::isfinite(line.x2)
+        && std::isfinite(line.y2)
+        && std::isfinite(line.nx)
+        && std::isfinite(line.ny)
+        && std::isfinite(line.rho)
+        && std::isfinite(line.theta);
+}
+
 double normalizedScore(double response)
 {
+    if (!std::isfinite(response)) {
+        return 0.0;
+    }
     return std::clamp(std::abs(response) / 50.0, 0.0, 1.0);
 }
 
@@ -30,6 +67,9 @@ double caliperRectAngleDeg(const VisionTools::CaliperRegion& region)
 double lineAngleDeg(const VisionTools::LineModel& line)
 {
     double angle = std::atan2(line.y2 - line.y1, line.x2 - line.x1) * 180.0 / pi;
+    if (!std::isfinite(angle)) {
+        return 0.0;
+    }
     if (angle < 0.0) {
         angle += 180.0;
     }
@@ -122,8 +162,14 @@ void ToolResultDisplayAdapter::showFindLine(VisionDisplay::VisionDisplayItem* di
     QVariantList calipers;
     for (size_t i = 0; i < result.calipers.size(); ++i) {
         const VisionTools::CaliperRegion& caliper = result.calipers[i];
+        if (!isFiniteCaliperRegion(caliper) || !std::isfinite(caliper.angleDeg)) {
+            continue;
+        }
         const VisionTools::CaliperResult* caliperResult = i < result.caliperResults.size() ? &result.caliperResults[i] : nullptr;
-        const bool found = caliperResult && caliperResult->ok && !caliperResult->selectedEdges.empty();
+        const bool found = caliperResult
+            && caliperResult->ok
+            && !caliperResult->selectedEdges.empty()
+            && isFiniteEdgePoint(caliperResult->selectedEdges.front());
         const VisionTools::EdgePoint edge = found ? caliperResult->selectedEdges.front() : VisionTools::EdgePoint {};
 
         QVariantMap map;
@@ -142,10 +188,10 @@ void ToolResultDisplayAdapter::showFindLine(VisionDisplay::VisionDisplayItem* di
     }
     display->addLineCalipers(toolId, calipers);
 
-    display->addEdgePoints(toolId, edgePointsToVariantList(result.fitResult.inlierPoints));
-    display->addEdgePoints(toolId, edgePointsToVariantList(result.fitResult.outlierPoints, true));
+    display->addEdgePoints(toolId, edgePointsToVariantList(result.inlierPoints));
+    display->addEdgePoints(toolId, edgePointsToVariantList(result.outlierPoints, true));
 
-    if (result.fitResult.ok) {
+    if (result.fitResult.ok && isFiniteLineModel(result.fitResult.line)) {
         const VisionTools::LineModel& line = result.fitResult.line;
         display->addFittedLineResult(toolId,
                                      line.x1,
@@ -212,8 +258,47 @@ void ToolResultDisplayAdapter::showFindCircle(VisionDisplay::VisionDisplayItem* 
         calipers.push_back(map);
     }
     display->addRadialCalipers(toolId, calipers);
-    display->addEdgePoints(toolId, edgePointsToVariantList(result.fitResult.inlierPoints));
-    display->addEdgePoints(toolId, edgePointsToVariantList(result.fitResult.outlierPoints, true));
+    for (size_t i = 0; i < result.candidateEdgePoints.size(); ++i) {
+        const VisionTools::EdgePoint& point = result.candidateEdgePoints[i];
+        if (isFiniteEdgePoint(point)) {
+            display->addToolPointMarker(toolId,
+                                        QStringLiteral("candidate_%1").arg(i),
+                                        point.x,
+                                        point.y,
+                                        90,
+                                        150,
+                                        255,
+                                        5.0);
+        }
+    }
+    for (size_t i = 0; i < result.edgePoints.size(); ++i) {
+        const VisionTools::EdgePoint& point = result.edgePoints[i];
+        if (isFiniteEdgePoint(point)) {
+            display->addToolPointMarker(toolId,
+                                        QStringLiteral("fit_input_%1").arg(i),
+                                        point.x,
+                                        point.y,
+                                        0,
+                                        230,
+                                        220,
+                                        9.0);
+        }
+    }
+    for (size_t i = 0; i < result.rejectedEdgePoints.size(); ++i) {
+        const VisionTools::EdgePoint& point = result.rejectedEdgePoints[i];
+        if (isFiniteEdgePoint(point)) {
+            display->addToolPointMarker(toolId,
+                                        QStringLiteral("rejected_%1").arg(i),
+                                        point.x,
+                                        point.y,
+                                        255,
+                                        80,
+                                        80,
+                                        11.0);
+        }
+    }
+    display->addEdgePoints(toolId, edgePointsToVariantList(result.inlierPoints));
+    display->addEdgePoints(toolId, edgePointsToVariantList(result.outlierPoints, true));
 
     if (result.fitResult.ok) {
         const VisionTools::CircleModel& circle = result.fitResult.circle;
@@ -232,7 +317,7 @@ void ToolResultDisplayAdapter::showFindCircle(VisionDisplay::VisionDisplayItem* 
                                QStringLiteral("%1 %2 Points=%3 R=%4 RMS=%5 Score=%6")
                                    .arg(toolId)
                                    .arg(result.ok ? QStringLiteral("OK") : QStringLiteral("NG"))
-                                   .arg(static_cast<int>(result.edgePoints.size()))
+                                   .arg(result.diagnostics.fitInputPointsCount)
                                    .arg(result.fitResult.circle.radius, 0, 'f', 2)
                                    .arg(result.fitResult.rmsError, 0, 'f', 3)
                                    .arg(result.fitResult.score, 0, 'f', 2),
@@ -320,8 +405,11 @@ void ToolResultDisplayAdapter::showFindEllipse(VisionDisplay::VisionDisplayItem*
 QVariantList ToolResultDisplayAdapter::edgePointsToVariantList(const std::vector<VisionTools::EdgePoint>& points, bool outlier)
 {
     QVariantList list;
-    list.reserve(static_cast<int>(points.size()));
+    list.reserve(static_cast<int>(std::min<size_t>(points.size(), static_cast<size_t>(std::numeric_limits<int>::max()))));
     for (const VisionTools::EdgePoint& point : points) {
+        if (!isFiniteEdgePoint(point)) {
+            continue;
+        }
         list.push_back(edgePointMap(point, outlier));
     }
     return list;
@@ -334,10 +422,16 @@ int ToolResultDisplayAdapter::selectedEdgeIndex(const std::vector<VisionTools::E
         return -1;
     }
 
-    const VisionTools::EdgePoint& selected = selectedEdges.front();
+    const VisionTools::EdgePoint selected = selectedEdges.front();
+    if (!isFiniteEdgePoint(selected)) {
+        return -1;
+    }
     int bestIndex = -1;
     double bestDistance = std::numeric_limits<double>::max();
     for (size_t i = 0; i < candidates.size(); ++i) {
+        if (!isFiniteEdgePoint(candidates[i])) {
+            continue;
+        }
         const double dx = candidates[i].x - selected.x;
         const double dy = candidates[i].y - selected.y;
         const double distance = dx * dx + dy * dy;

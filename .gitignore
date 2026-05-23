@@ -1,4 +1,8 @@
 build/
+build_*/
+vcpkg_installed/
+asan_logs/
+data/shape_match/reports/
 .qtcreator/
 
 *.user

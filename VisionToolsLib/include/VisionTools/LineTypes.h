@@ -17,6 +17,7 @@ struct VISIONTOOLS_API LineSearchRegion
     double length = 0.0;
     double searchLength = 0.0;
     double angleDeg = 0.0;
+    double searchDirectionAngleDeg = 0.0;
     int caliperCount = 0;
     double caliperWidth = 0.0;
 };

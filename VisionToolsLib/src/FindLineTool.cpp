@@ -36,7 +36,8 @@ FindLineResult FindLineTool::run(const ImageView& image, const LineSearchRegion&
         result.message = QStringLiteral("Invalid image");
         return result;
     }
-    if (region.length <= 0.0 || region.searchLength <= 0.0 || region.caliperCount < 2 || region.caliperWidth < 0.0) {
+    if (region.length <= 0.0 || region.searchLength <= 0.0 || region.caliperCount < 2 || region.caliperWidth < 0.0
+        || !std::isfinite(region.angleDeg) || !std::isfinite(region.searchDirectionAngleDeg)) {
         result.message = QStringLiteral("Invalid line search region");
         return result;
     }
@@ -82,7 +83,7 @@ std::vector<CaliperRegion> FindLineTool::generateCalipers(const LineSearchRegion
     const double angleRad = region.angleDeg * pi / 180.0;
     const double lineDirX = std::cos(angleRad);
     const double lineDirY = std::sin(angleRad);
-    const double searchAngleDeg = region.angleDeg + 90.0;
+    const double searchAngleDeg = region.searchDirectionAngleDeg;
     const double step = region.caliperCount > 1
         ? region.length / static_cast<double>(region.caliperCount - 1)
         : 0.0;

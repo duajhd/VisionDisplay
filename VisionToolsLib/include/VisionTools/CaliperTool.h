@@ -30,7 +30,7 @@ private:
     std::vector<EdgePoint> detectCandidates(const std::vector<double>& gradient,
                                             const CaliperRegion& region) const;
 
-    std::vector<EdgePoint> selectEdges(const std::vector<EdgePoint>& candidates) const;
+    std::vector<EdgePoint> selectEdges(const std::vector<EdgePoint>& candidates, bool* selectedByFallback = nullptr) const;
 
     CaliperParams m_params;
 };

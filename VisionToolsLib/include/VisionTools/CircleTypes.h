@@ -67,6 +67,41 @@ struct VISIONTOOLS_API FindCircleParams
     CaliperParams caliperParams;
     CircleFitParams fitParams;
     double minEdgeResponse = 0.0;
+    double circleExpectedPositionTolerance = 0.0;
+};
+
+struct VISIONTOOLS_API FindCircleCaliperDiagnostic
+{
+    int index = -1;
+    double centerX = 0.0;
+    double centerY = 0.0;
+    double searchDirectionAngleDeg = 0.0;
+    double selectedX = 0.0;
+    double selectedY = 0.0;
+    double response = 0.0;
+    double position1D = 0.0;
+    double expectedPosition1D = 0.0;
+    double maxPositionDeviation = 0.0;
+    bool hasSelectedEdge = false;
+    bool withinExpected = false;
+    bool selectedByFallback = false;
+    bool acceptedForFit = false;
+    QString rejectedReason;
+};
+
+struct VISIONTOOLS_API FindCircleDiagnosticSummary
+{
+    int caliperCount = 0;
+    int caliperHitCount = 0;
+    int selectedEdgeCount = 0;
+    int withinExpectedCount = 0;
+    int rejectedByExpectedWindowCount = 0;
+    int fitInputPointsCount = 0;
+    int initialFitPointCount = 0;
+    int inlierCount = 0;
+    int outlierCount = 0;
+    int finalFitPointCount = 0;
+    bool ok = false;
 };
 
 struct VISIONTOOLS_API FindCircleResult
@@ -75,7 +110,9 @@ struct VISIONTOOLS_API FindCircleResult
     CircleSearchRegion searchRegion;
     std::vector<CaliperRegion> calipers;
     std::vector<CaliperResult> caliperResults;
+    std::vector<EdgePoint> candidateEdgePoints;
     std::vector<EdgePoint> edgePoints;
+    std::vector<EdgePoint> rejectedEdgePoints;
     std::vector<EdgePoint> inputPoints;
     std::vector<EdgePoint> inlierPoints;
     std::vector<EdgePoint> outlierPoints;
@@ -83,6 +120,7 @@ struct VISIONTOOLS_API FindCircleResult
     double maxError = 0.0;
     double score = 0.0;
     CircleFitResult fitResult;
+    FindCircleDiagnosticSummary diagnostics;
     QString message;
 };
 

@@ -1,4 +1,5 @@
 #include "IntegratedDemoController.h"
+#include "ShapeModelDebugViewModel.h"
 #include "VisionDisplay/VisionDisplayItem.h"
 
 #include <QCoreApplication>
@@ -11,9 +12,11 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
 
     IntegratedDemoController integratedController;
+    ShapeModelDebugViewModel shapeModelDebug;
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("integratedController"), &integratedController);
+    engine.rootContext()->setContextProperty(QStringLiteral("shapeModelDebug"), &shapeModelDebug);
     QObject::connect(
         &engine,
         &QQmlApplicationEngine::objectCreationFailed,

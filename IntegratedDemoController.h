@@ -3,8 +3,11 @@
 #include <QObject>
 #include <QImage>
 #include <QPointer>
+#include <QRect>
 #include <QString>
 #include <QVariantMap>
+
+#include "VisionTools/Matching/GrayTemplate.h"
 
 namespace VisionDisplay {
 class VisionDisplayItem;
@@ -28,7 +31,31 @@ public:
     Q_INVOKABLE void createFindCircleCalipers();
     Q_INVOKABLE void runCaliper();
     Q_INVOKABLE void runFindLine();
+    Q_INVOKABLE void runFindLineWithParams(int polarity,
+                                           double minResponse,
+                                           int searchDirection,
+                                           int caliperCount,
+                                           double projectionWidth,
+                                           double searchLength);
+    Q_INVOKABLE QString runFindLineStabilityTest(int polarity,
+                                                 double minResponse,
+                                                 int searchDirection,
+                                                 int caliperCount,
+                                                 double projectionWidth,
+                                                 double searchLength);
     Q_INVOKABLE void runFindCircle();
+    Q_INVOKABLE void runFindCircleWithParams(int polarity,
+                                             double minResponse,
+                                             int searchDirection,
+                                             int caliperCount,
+                                             double projectionWidth,
+                                             double searchLength);
+    Q_INVOKABLE QString runFindCircleStabilityTest(int polarity,
+                                                   double minResponse,
+                                                   int searchDirection,
+                                                   int caliperCount,
+                                                   double projectionWidth,
+                                                   double searchLength);
     Q_INVOKABLE void runFindCircleRegression();
     Q_INVOKABLE void runFindCircleRegressionRobustOff();
     Q_INVOKABLE void runFindCircleRegressionCurrentSettings();
@@ -47,12 +74,27 @@ public:
                                                   int fallbackEdgeSelection);
     Q_INVOKABLE void clearSingleCaliperDebugGraphics();
     Q_INVOKABLE QString lastSingleCaliperDiagnostics() const;
+    Q_INVOKABLE QString lastFindLineDiagnostics() const;
+    Q_INVOKABLE QString lastFindCircleDiagnostics() const;
     Q_INVOKABLE void runFindEllipse();
     Q_INVOKABLE void runFindEllipseWithLoss(const QString& lossType);
     Q_INVOKABLE void clearCaliperGraphics();
     Q_INVOKABLE void clearFindLineGraphics();
     Q_INVOKABLE void clearFindCircleGraphics();
     Q_INVOKABLE void clearFindEllipseGraphics();
+    Q_INVOKABLE bool buildGrayTemplateFromCurrentImage(double x, double y, double width, double height);
+    Q_INVOKABLE QVariantMap runGrayMatch(double searchX,
+                                         double searchY,
+                                         double searchWidth,
+                                         double searchHeight,
+                                         double minScore,
+                                         int stepX,
+                                         int stepY,
+                                         int topK,
+                                         bool enableSubpixelRefine);
+    Q_INVOKABLE QString lastGrayMatchDiagnostics() const;
+    Q_INVOKABLE void clearGrayMatchGraphics();
+    Q_INVOKABLE QString runDependencySelfTest();
     Q_INVOKABLE void clearToolGraphics();
 
 signals:
@@ -73,6 +115,7 @@ private:
     void createSyntheticCircleCalipers();
     void createRegressionCircleCalipers();
     void runFindCircleRegressionInternal(bool robustOff, const QString& label);
+    QString saveSingleCaliperDiagnosticsToFile() const;
     void setStatus(const QString& status);
 
     QPointer<VisionDisplay::VisionDisplayItem> m_display;
@@ -81,4 +124,9 @@ private:
     QString m_status;
     QString m_circleDiagnostics;
     QString m_singleCaliperDiagnostics;
+    QString m_findLineDiagnostics;
+    QString m_findCircleDiagnostics;
+    VisionTools::Matching::GrayTemplate m_grayTemplate;
+    QRect m_grayTemplateRoi;
+    QString m_grayMatchDiagnostics;
 };

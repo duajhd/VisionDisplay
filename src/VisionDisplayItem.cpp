@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <utility>
 
@@ -38,6 +39,25 @@ namespace {
 constexpr int defaultGraphicLayer = static_cast<int>(DisplayLayer::Result);
 constexpr int circleSegments = 96;
 constexpr double pi = 3.14159265358979323846;
+constexpr int maxGeometryPoints = 100000;
+constexpr double minModelRoiSize = 32.0;
+
+bool isFiniteValue(double value)
+{
+    return std::isfinite(value);
+}
+
+bool isFinitePoint(const QPointF& point)
+{
+    return isFiniteValue(point.x()) && isFiniteValue(point.y());
+}
+
+bool isFiniteRect(const QRectF& rect)
+{
+    return isFinitePoint(rect.topLeft())
+        && isFiniteValue(rect.width())
+        && isFiniteValue(rect.height());
+}
 
 class DisplayRootNode final : public QSGNode
 {
@@ -95,8 +115,16 @@ QSGGeometryNode* createLineNode(const QVector<QPointF>& viewPoints,
                                 const GraphicStyle& style,
                                 double zoom)
 {
-    if (viewPoints.size() < 2) {
+    if (viewPoints.size() < 2 || viewPoints.size() > maxGeometryPoints) {
         return nullptr;
+    }
+    if (drawingMode == QSGGeometry::DrawLines && (viewPoints.size() % 2) != 0) {
+        return nullptr;
+    }
+    for (const QPointF& point : viewPoints) {
+        if (!isFinitePoint(point)) {
+            return nullptr;
+        }
     }
 
     auto* node = new QSGGeometryNode;
@@ -135,6 +163,9 @@ QVector<QPointF> rectPoints(const QRectF& rect)
 
 QVector<QPointF> circlePoints(const QPointF& center, double radius)
 {
+    if (!isFinitePoint(center) || !isFiniteValue(radius) || radius <= 0.0) {
+        return {};
+    }
     QVector<QPointF> points;
     points.reserve(circleSegments + 1);
     for (int i = 0; i <= circleSegments; ++i) {
@@ -147,6 +178,9 @@ QVector<QPointF> circlePoints(const QPointF& center, double radius)
 
 QVector<QPointF> crossPoints(const QPointF& center, double size)
 {
+    if (!isFinitePoint(center) || !isFiniteValue(size) || size <= 0.0) {
+        return {};
+    }
     const double halfSize = size * 0.5;
     return {
         QPointF(center.x() - halfSize, center.y()),
@@ -158,6 +192,10 @@ QVector<QPointF> crossPoints(const QPointF& center, double size)
 
 QVector<QPointF> rotatedRectPoints(const QPointF& center, double width, double height, double angleDeg)
 {
+    if (!isFinitePoint(center) || !isFiniteValue(width) || !isFiniteValue(height) || !isFiniteValue(angleDeg)
+        || width <= 0.0 || height <= 0.0) {
+        return {};
+    }
     const double halfWidth = width * 0.5;
     const double halfHeight = height * 0.5;
     const double rad = angleDeg * pi / 180.0;
@@ -182,7 +220,11 @@ QVector<QPointF> rotatedRectPoints(const QPointF& center, double width, double h
 
 QVector<QPointF> arcPoints(const QPointF& center, double radius, double startAngleDeg, double spanAngleDeg)
 {
-    const int segments = std::max(12, static_cast<int>(std::ceil(std::abs(spanAngleDeg) / 6.0)));
+    if (!isFinitePoint(center) || !isFiniteValue(radius) || !isFiniteValue(startAngleDeg) || !isFiniteValue(spanAngleDeg)
+        || radius <= 0.0 || std::abs(spanAngleDeg) <= 0.0001) {
+        return {};
+    }
+    const int segments = std::clamp(static_cast<int>(std::ceil(std::abs(spanAngleDeg) / 6.0)), 12, 720);
     QVector<QPointF> points;
     points.reserve(segments + 1);
     for (int i = 0; i <= segments; ++i) {
@@ -201,7 +243,12 @@ QVector<QPointF> ellipsePoints(const QPointF& center,
                                double startAngleDeg,
                                double spanAngleDeg)
 {
-    const int segments = std::max(24, static_cast<int>(std::ceil(std::abs(spanAngleDeg) / 5.0)));
+    if (!isFinitePoint(center) || !isFiniteValue(radiusA) || !isFiniteValue(radiusB) || !isFiniteValue(angleDeg)
+        || !isFiniteValue(startAngleDeg) || !isFiniteValue(spanAngleDeg)
+        || radiusA <= 0.0 || radiusB <= 0.0 || std::abs(spanAngleDeg) <= 0.0001) {
+        return {};
+    }
+    const int segments = std::clamp(static_cast<int>(std::ceil(std::abs(spanAngleDeg) / 5.0)), 24, 720);
     const double angleRad = angleDeg * pi / 180.0;
     const double c = std::cos(angleRad);
     const double s = std::sin(angleRad);
@@ -223,7 +270,13 @@ QVector<QPointF> mapPoints(const QVector<QPointF>& imagePoints, const Coordinate
     QVector<QPointF> viewPoints;
     viewPoints.reserve(imagePoints.size());
     for (const QPointF& point : imagePoints) {
-        viewPoints.push_back(mapper.imageToView(point));
+        if (!isFinitePoint(point)) {
+            continue;
+        }
+        const QPointF viewPoint = mapper.imageToView(point);
+        if (isFinitePoint(viewPoint)) {
+            viewPoints.push_back(viewPoint);
+        }
     }
     return viewPoints;
 }
@@ -249,6 +302,9 @@ QSGGeometryNode* createArrowNode(const QLineF& imageLine,
 {
     const QPointF p1 = mapper.imageToView(imageLine.p1());
     const QPointF p2 = mapper.imageToView(imageLine.p2());
+    if (!isFinitePoint(p1) || !isFinitePoint(p2)) {
+        return nullptr;
+    }
     QLineF shaft(p1, p2);
     if (shaft.length() <= 0.0001) {
         return nullptr;
@@ -288,7 +344,13 @@ QSGSimpleTextureNode* createTextNode(const GraphicObject& graphic,
 
     const QFontMetrics metrics(font);
     const QRect textBounds = metrics.boundingRect(graphic.text).adjusted(-2, -2, 2, 2);
+    if (textBounds.width() <= 0 || textBounds.height() <= 0) {
+        return nullptr;
+    }
     QImage textImage(textBounds.size(), QImage::Format_RGBA8888_Premultiplied);
+    if (textImage.isNull()) {
+        return nullptr;
+    }
     textImage.fill(Qt::transparent);
 
     QPainter painter(&textImage);
@@ -309,6 +371,10 @@ QSGSimpleTextureNode* createTextNode(const GraphicObject& graphic,
     node->setTexture(texture);
 
     const QPointF topLeft = mapper.imageToView(graphic.textPosition);
+    if (!isFinitePoint(topLeft)) {
+        delete node;
+        return nullptr;
+    }
     node->setRect(QRectF(topLeft, QSizeF(textImage.width(), textImage.height())));
     return node;
 }
@@ -426,6 +492,98 @@ bool pointInRotatedRect(const QPointF& point,
     const QPointF local = unrotateVector(point - center, angleDeg);
     return std::abs(local.x()) <= width * 0.5 + tolerance
         && std::abs(local.y()) <= height * 0.5 + tolerance;
+}
+
+QVector<QPointF> rectHandlePoints(const QRectF& rect)
+{
+    const QRectF r = rect.normalized();
+    const QPointF center = r.center();
+    return {
+        r.topLeft(),
+        QPointF(center.x(), r.top()),
+        r.topRight(),
+        QPointF(r.right(), center.y()),
+        r.bottomRight(),
+        QPointF(center.x(), r.bottom()),
+        r.bottomLeft(),
+        QPointF(r.left(), center.y())
+    };
+}
+
+QVector<QPointF> edgeHandlePoints(const QRectF& rect)
+{
+    const QRectF r = rect.normalized();
+    const QPointF center = r.center();
+    return {
+        QPointF(center.x(), r.top()),
+        QPointF(r.right(), center.y()),
+        QPointF(center.x(), r.bottom()),
+        QPointF(r.left(), center.y())
+    };
+}
+
+int rectHandleAt(const QRectF& rect, const QPointF& point, double tolerance)
+{
+    const QVector<QPointF> handles = rectHandlePoints(rect);
+    for (int i = 0; i < handles.size(); ++i) {
+        if (QLineF(point, handles[i]).length() <= tolerance) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+QRectF resizedRectFromHandle(const QRectF& original, int handle, const QPointF& currentPoint)
+{
+    QRectF rect = original.normalized();
+    double left = rect.left();
+    double right = rect.right();
+    double top = rect.top();
+    double bottom = rect.bottom();
+
+    switch (handle) {
+    case 0:
+        left = currentPoint.x();
+        top = currentPoint.y();
+        break;
+    case 1:
+        top = currentPoint.y();
+        break;
+    case 2:
+        right = currentPoint.x();
+        top = currentPoint.y();
+        break;
+    case 3:
+        right = currentPoint.x();
+        break;
+    case 4:
+        right = currentPoint.x();
+        bottom = currentPoint.y();
+        break;
+    case 5:
+        bottom = currentPoint.y();
+        break;
+    case 6:
+        left = currentPoint.x();
+        bottom = currentPoint.y();
+        break;
+    case 7:
+        left = currentPoint.x();
+        break;
+    default:
+        return original.translated(currentPoint - original.center());
+    }
+
+    constexpr double minSize = 3.0;
+    QRectF resized(QPointF(left, top), QPointF(right, bottom));
+    resized = resized.normalized();
+    if (resized.width() < minSize) {
+        resized.setWidth(minSize);
+    }
+    if (resized.height() < minSize) {
+        resized.setHeight(minSize);
+    }
+    return resized;
 }
 
 QString metricText(const QString& label, double value, const QString& unit)
@@ -823,6 +981,65 @@ void VisionDisplayItem::setKeepViewTransformOnNewImage(bool enabled)
     emit keepViewTransformOnNewImageChanged();
 }
 
+QRectF VisionDisplayItem::modelRoi() const
+{
+    return m_modelRoi;
+}
+
+void VisionDisplayItem::setModelRoi(const QRectF& roi)
+{
+    const QRectF next = boundedModelRoi(roi);
+    if (m_modelRoi == next) {
+        return;
+    }
+    m_modelRoi = next;
+    emit modelRoiChanged();
+    markOverlayDirty();
+    update();
+}
+
+bool VisionDisplayItem::modelRoiVisible() const
+{
+    return m_modelRoiVisible;
+}
+
+void VisionDisplayItem::setModelRoiVisible(bool visible)
+{
+    if (m_modelRoiVisible == visible) {
+        return;
+    }
+    m_modelRoiVisible = visible;
+    emit modelRoiVisibleChanged();
+    markOverlayDirty();
+    update();
+}
+
+bool VisionDisplayItem::modelRoiEditable() const
+{
+    return m_modelRoiEditable;
+}
+
+void VisionDisplayItem::setModelRoiEditable(bool editable)
+{
+    if (m_modelRoiEditable == editable) {
+        return;
+    }
+    m_modelRoiEditable = editable;
+    if (!editable) {
+        m_modelRoiDrag = ModelRoiDrag();
+        unsetCursor();
+    }
+    emit modelRoiEditableChanged();
+    markOverlayDirty();
+    update();
+}
+
+void VisionDisplayItem::resetModelRoi()
+{
+    setModelRoi(defaultModelRoi());
+    setModelRoiVisible(true);
+}
+
 void VisionDisplayItem::setImage(const QImage& image)
 {
     updateFrame(image);
@@ -1039,6 +1256,58 @@ void VisionDisplayItem::deleteSelectedRoi()
     update();
 }
 
+QVariantMap VisionDisplayItem::roiGeometry(const QString& id) const
+{
+    QVariantMap geometry;
+    const RoiObject* roi = m_rois.findById(id);
+    if (!roi) {
+        geometry.insert(QStringLiteral("valid"), false);
+        return geometry;
+    }
+
+    geometry.insert(QStringLiteral("valid"), true);
+    geometry.insert(QStringLiteral("id"), roi->id);
+    switch (roi->type) {
+    case RoiType::Rect: {
+        const QRectF rect = static_cast<const RectRoi*>(roi)->rect.normalized();
+        geometry.insert(QStringLiteral("type"), QStringLiteral("rect"));
+        geometry.insert(QStringLiteral("x"), rect.x());
+        geometry.insert(QStringLiteral("y"), rect.y());
+        geometry.insert(QStringLiteral("width"), rect.width());
+        geometry.insert(QStringLiteral("height"), rect.height());
+        break;
+    }
+    case RoiType::RotatedRect: {
+        const auto* rotated = static_cast<const RotatedRectRoi*>(roi);
+        geometry.insert(QStringLiteral("type"), QStringLiteral("rotatedRect"));
+        geometry.insert(QStringLiteral("centerX"), rotated->center.x());
+        geometry.insert(QStringLiteral("centerY"), rotated->center.y());
+        geometry.insert(QStringLiteral("width"), rotated->width);
+        geometry.insert(QStringLiteral("height"), rotated->height);
+        geometry.insert(QStringLiteral("angleDeg"), rotated->angleDeg);
+        break;
+    }
+    case RoiType::Circle: {
+        const auto* circle = static_cast<const CircleRoi*>(roi);
+        geometry.insert(QStringLiteral("type"), QStringLiteral("circle"));
+        geometry.insert(QStringLiteral("centerX"), circle->center.x());
+        geometry.insert(QStringLiteral("centerY"), circle->center.y());
+        geometry.insert(QStringLiteral("radius"), circle->radius);
+        break;
+    }
+    case RoiType::Line: {
+        const QLineF line = static_cast<const LineRoi*>(roi)->line;
+        geometry.insert(QStringLiteral("type"), QStringLiteral("line"));
+        geometry.insert(QStringLiteral("x1"), line.x1());
+        geometry.insert(QStringLiteral("y1"), line.y1());
+        geometry.insert(QStringLiteral("x2"), line.x2());
+        geometry.insert(QStringLiteral("y2"), line.y2());
+        break;
+    }
+    }
+    return geometry;
+}
+
 QString VisionDisplayItem::exportRoisJson() const
 {
     return exportRoisJsonString();
@@ -1071,6 +1340,15 @@ bool VisionDisplayItem::saveScreenshot(const QString& path, bool withOverlay) co
             }
             painter.setPen(painterPen(roiStyle(*roi), m_mapper.zoom()));
             drawPolyline(&painter, roi->outlinePoints(), m_mapper, false);
+            if (roi->selected && roi->type == RoiType::Rect) {
+                const QRectF rect = static_cast<const RectRoi*>(roi.get())->rect;
+                for (const QPointF& handle : rectHandlePoints(rect)) {
+                    const QPointF p = m_mapper.imageToView(handle);
+                    constexpr double half = 5.5;
+                    painter.drawLine(QPointF(p.x() - half, p.y()), QPointF(p.x() + half, p.y()));
+                    painter.drawLine(QPointF(p.x(), p.y() - half), QPointF(p.x(), p.y() + half));
+                }
+            }
         }
 
         for (const GraphicObject& graphic : m_graphics.graphics()) {
@@ -1506,10 +1784,116 @@ void VisionDisplayItem::setToolGraphicsVisible(const QString& toolId, bool visib
     update();
 }
 
+void VisionDisplayItem::setOverlayData(const QString& overlayId, const VisionDisplayOverlayData& data)
+{
+    if (overlayId.isEmpty()) {
+        return;
+    }
+
+    m_graphics.clearToolGraphics(overlayId);
+    int itemIndex = 0;
+
+    for (const OverlayPolyline& polyline : data.polylines) {
+        if (polyline.points.size() < 2) {
+            continue;
+        }
+        GraphicObject graphic = baseToolGraphic(overlayId,
+                                                QStringLiteral("%1_polyline_%2").arg(overlayId).arg(itemIndex++),
+                                                QStringLiteral("Overlay"),
+                                                GraphicType::Polyline,
+                                                polyline.color);
+        graphic.layer = static_cast<int>(DisplayLayer::Debug);
+        graphic.points = polyline.points;
+        graphic.style.lineWidth = std::max(1.0, polyline.width);
+        addToolGraphic(graphic, false);
+
+        if (!polyline.label.isEmpty()) {
+            GraphicObject label = baseToolGraphic(overlayId,
+                                                  QStringLiteral("%1_polyline_label_%2").arg(overlayId).arg(itemIndex++),
+                                                  QStringLiteral("Overlay"),
+                                                  GraphicType::Text,
+                                                  polyline.color);
+            label.layer = static_cast<int>(DisplayLayer::Debug);
+            label.text = polyline.label;
+            label.textPosition = polyline.points[polyline.points.size() / 2];
+            label.style.fontPixelSize = 12;
+            addToolGraphic(label, false);
+        }
+    }
+
+    for (const OverlayArrow& arrow : data.arrows) {
+        GraphicObject graphic = baseToolGraphic(overlayId,
+                                                QStringLiteral("%1_arrow_%2").arg(overlayId).arg(itemIndex++),
+                                                QStringLiteral("Overlay"),
+                                                GraphicType::Arrow,
+                                                arrow.color);
+        graphic.layer = static_cast<int>(DisplayLayer::Debug);
+        graphic.line = QLineF(arrow.p0, arrow.p1);
+        graphic.style.lineWidth = std::max(1.0, arrow.width);
+        graphic.arrowHeadSize = 7.0;
+        addToolGraphic(graphic, false);
+    }
+
+    for (const OverlayPoint& point : data.points) {
+        GraphicObject marker = baseToolGraphic(overlayId,
+                                               QStringLiteral("%1_point_%2").arg(overlayId).arg(itemIndex++),
+                                               QStringLiteral("Overlay"),
+                                               GraphicType::PointMarker,
+                                               point.color);
+        marker.layer = static_cast<int>(DisplayLayer::Debug);
+        marker.center = point.pos;
+        marker.markerSize = std::max(2.0, point.radius * 2.0);
+        marker.style.lineWidth = 2.0;
+        addToolGraphic(marker, false);
+
+        if (!point.label.isEmpty()) {
+            GraphicObject label = baseToolGraphic(overlayId,
+                                                  QStringLiteral("%1_point_label_%2").arg(overlayId).arg(itemIndex++),
+                                                  QStringLiteral("Overlay"),
+                                                  GraphicType::Text,
+                                                  point.color);
+            label.layer = static_cast<int>(DisplayLayer::Debug);
+            label.textPosition = point.pos + QPointF(point.radius + 2.0, -point.radius - 2.0);
+            label.text = point.label;
+            label.style.fontPixelSize = 11;
+            addToolGraphic(label, false);
+        }
+    }
+
+    for (const OverlayText& text : data.texts) {
+        if (text.text.isEmpty()) {
+            continue;
+        }
+        GraphicObject graphic = baseToolGraphic(overlayId,
+                                                QStringLiteral("%1_text_%2").arg(overlayId).arg(itemIndex++),
+                                                QStringLiteral("Overlay"),
+                                                GraphicType::Text,
+                                                text.color);
+        graphic.layer = static_cast<int>(DisplayLayer::Debug);
+        graphic.textPosition = text.pos;
+        graphic.text = text.text;
+        graphic.style.fontPixelSize = std::max(1, text.fontSize);
+        addToolGraphic(graphic, false);
+    }
+
+    markOverlayDirty();
+    update();
+}
+
+void VisionDisplayItem::clearOverlayData(const QString& overlayId)
+{
+    clearToolGraphics(overlayId);
+}
+
 void VisionDisplayItem::addFindLineSearchRegion(const QString& toolId, double centerX, double centerY, double width, double height, double angleDeg)
 {
+    const QPointF center(centerX, centerY);
+    if (!isFinitePoint(center) || !isFiniteValue(width) || !isFiniteValue(height) || !isFiniteValue(angleDeg)
+        || width <= 0.0 || height <= 0.0) {
+        return;
+    }
     GraphicObject region = baseToolGraphic(toolId, toolId + QStringLiteral("_search_region"), QStringLiteral("FindLine"), GraphicType::RotatedRect, QColor(80, 190, 255));
-    region.center = QPointF(centerX, centerY);
+    region.center = center;
     region.rect = QRectF(0.0, 0.0, width, height);
     region.angleDeg = angleDeg;
     addToolGraphic(region);
@@ -1518,6 +1902,11 @@ void VisionDisplayItem::addFindLineSearchRegion(const QString& toolId, double ce
 void VisionDisplayItem::addLineCaliper(const QString& toolId, const QString& id, double centerX, double centerY, double width, double height, double angleDeg, double searchDirectionAngleDeg, bool found, double edgeX, double edgeY, double score)
 {
     const QPointF center(centerX, centerY);
+    if (id.isEmpty() || !isFinitePoint(center) || !isFiniteValue(width) || !isFiniteValue(height)
+        || !isFiniteValue(angleDeg) || !isFiniteValue(searchDirectionAngleDeg)
+        || width <= 0.0 || height <= 0.0) {
+        return;
+    }
     GraphicObject caliper = baseToolGraphic(toolId, toolId + QStringLiteral("_caliper_") + id, QStringLiteral("FindLine"), GraphicType::RotatedRect, found ? QColor(255, 210, 80) : QColor(130, 130, 130), found);
     caliper.center = center;
     caliper.rect = QRectF(0.0, 0.0, width, height);
@@ -1531,8 +1920,14 @@ void VisionDisplayItem::addLineCaliper(const QString& toolId, const QString& id,
     addToolGraphic(arrow, false);
 
     if (found) {
+        const QPointF edgePoint(edgeX, edgeY);
+        if (!isFinitePoint(edgePoint)) {
+            markOverlayDirty();
+            update();
+            return;
+        }
         GraphicObject edge = baseToolGraphic(toolId, caliper.id + QStringLiteral("_edge"), QStringLiteral("FindLine"), GraphicType::PointMarker, QColor(0, 255, 120), true);
-        edge.center = QPointF(edgeX, edgeY);
+        edge.center = edgePoint;
         edge.markerSize = 8.0 + std::clamp(score, 0.0, 1.0) * 3.0;
         addToolGraphic(edge, false);
     }
@@ -1554,6 +1949,11 @@ void VisionDisplayItem::addLineCalipers(const QString& toolId, const QVariantLis
         const double searchDirectionAngleDeg = item.value(QStringLiteral("searchDirectionAngleDeg")).toDouble();
         const bool found = item.value(QStringLiteral("found")).toBool();
         const double score = item.value(QStringLiteral("score")).toDouble();
+        if (id.isEmpty() || !isFinitePoint(center) || !isFiniteValue(width) || !isFiniteValue(height)
+            || !isFiniteValue(angleDeg) || !isFiniteValue(searchDirectionAngleDeg)
+            || width <= 0.0 || height <= 0.0) {
+            continue;
+        }
 
         GraphicObject caliper = baseToolGraphic(toolId, toolId + QStringLiteral("_caliper_") + id, QStringLiteral("FindLine"), GraphicType::RotatedRect, found ? QColor(255, 210, 80) : QColor(130, 130, 130), found);
         caliper.center = center;
@@ -1567,8 +1967,13 @@ void VisionDisplayItem::addLineCalipers(const QString& toolId, const QVariantLis
         addToolGraphic(arrow, false);
 
         if (found) {
+            const QPointF edgePoint(item.value(QStringLiteral("edgeX")).toDouble(),
+                                    item.value(QStringLiteral("edgeY")).toDouble());
+            if (!isFinitePoint(edgePoint)) {
+                continue;
+            }
             GraphicObject edge = baseToolGraphic(toolId, caliper.id + QStringLiteral("_edge"), QStringLiteral("FindLine"), GraphicType::PointMarker, QColor(0, 255, 120), true);
-            edge.center = QPointF(item.value(QStringLiteral("edgeX")).toDouble(), item.value(QStringLiteral("edgeY")).toDouble());
+            edge.center = edgePoint;
             edge.markerSize = 8.0 + std::clamp(score, 0.0, 1.0) * 3.0;
             addToolGraphic(edge, false);
         }
@@ -1579,8 +1984,12 @@ void VisionDisplayItem::addLineCalipers(const QString& toolId, const QVariantLis
 
 void VisionDisplayItem::addEdgePoint(const QString& toolId, const QString& id, double x, double y)
 {
+    const QPointF point(x, y);
+    if (id.isEmpty() || !isFinitePoint(point)) {
+        return;
+    }
     GraphicObject edge = baseToolGraphic(toolId, toolId + QStringLiteral("_edge_") + id, QStringLiteral("Tool"), GraphicType::PointMarker, QColor(0, 255, 120));
-    edge.center = QPointF(x, y);
+    edge.center = point;
     edge.markerSize = 8.0;
     addToolGraphic(edge);
 }
@@ -1594,18 +2003,24 @@ void VisionDisplayItem::addEdgePoints(const QString& toolId, const QVariantList&
             ++index;
             continue;
         }
+        const QPointF point(item.value(QStringLiteral("x")).toDouble(),
+                            item.value(QStringLiteral("y")).toDouble());
+        if (!isFinitePoint(point)) {
+            ++index;
+            continue;
+        }
         const bool outlier = item.value(QStringLiteral("outlier"), false).toBool();
         const bool inlier = item.value(QStringLiteral("inlier"), !outlier).toBool();
         const QColor color = outlier ? QColor(255, 80, 80) : (inlier ? QColor(0, 255, 120) : QColor(255, 210, 80));
         const QString pointKind = outlier ? QStringLiteral("outlier") : (inlier ? QStringLiteral("inlier") : QStringLiteral("candidate"));
         GraphicObject edge = baseToolGraphic(toolId, QStringLiteral("%1_%2_edge_%3").arg(toolId, pointKind).arg(index), QStringLiteral("Tool"), GraphicType::PointMarker, color);
-        edge.center = QPointF(item.value(QStringLiteral("x")).toDouble(), item.value(QStringLiteral("y")).toDouble());
+        edge.center = point;
         edge.markerSize = outlier ? 9.0 : 7.0;
         addToolGraphic(edge, false);
 
         const double nx = item.value(QStringLiteral("nx")).toDouble();
         const double ny = item.value(QStringLiteral("ny")).toDouble();
-        if (!qFuzzyIsNull(nx) || !qFuzzyIsNull(ny)) {
+        if (isFiniteValue(nx) && isFiniteValue(ny) && (!qFuzzyIsNull(nx) || !qFuzzyIsNull(ny))) {
             GraphicObject normal = baseToolGraphic(toolId, QStringLiteral("%1_%2_edge_normal_%3").arg(toolId, pointKind).arg(index), QStringLiteral("Tool"), GraphicType::Arrow, QColor(80, 220, 255));
             const QPointF p = edge.center;
             normal.line = QLineF(p, p + QPointF(nx, ny) * 20.0);
@@ -1620,9 +2035,15 @@ void VisionDisplayItem::addEdgePoints(const QString& toolId, const QVariantList&
 
 void VisionDisplayItem::addFittedLineResult(const QString& toolId, double x1, double y1, double x2, double y2, double angleDeg, double score, double rmsError, const QString& label)
 {
+    const QPointF p1(x1, y1);
+    const QPointF p2(x2, y2);
+    if (!isFinitePoint(p1) || !isFinitePoint(p2) || !isFiniteValue(angleDeg)
+        || !isFiniteValue(score) || !isFiniteValue(rmsError)) {
+        return;
+    }
     const bool ok = score >= 0.5;
     GraphicObject line = baseToolGraphic(toolId, toolId + QStringLiteral("_fitted_line"), QStringLiteral("FindLine"), GraphicType::FittedLine, QColor(40, 210, 90), ok);
-    line.line = QLineF(QPointF(x1, y1), QPointF(x2, y2));
+    line.line = QLineF(p1, p2);
     line.style.lineWidth = 2.5;
     addToolGraphic(line, false);
 
@@ -1653,8 +2074,13 @@ void VisionDisplayItem::addExpectedCircle(const QString& toolId, double centerX,
 
 void VisionDisplayItem::addExpectedArc(const QString& toolId, double centerX, double centerY, double radius, double startAngleDeg, double spanAngleDeg)
 {
+    const QPointF center(centerX, centerY);
+    if (!isFinitePoint(center) || !isFiniteValue(radius) || !isFiniteValue(startAngleDeg) || !isFiniteValue(spanAngleDeg)
+        || radius <= 0.0 || std::abs(spanAngleDeg) <= 0.0001) {
+        return;
+    }
     GraphicObject arc = baseToolGraphic(toolId, toolId + QStringLiteral("_expected_arc"), QStringLiteral("FindCircle"), GraphicType::Arc, QColor(110, 170, 255));
-    arc.center = QPointF(centerX, centerY);
+    arc.center = center;
     arc.radius = radius;
     arc.startAngleDeg = startAngleDeg;
     arc.spanAngleDeg = spanAngleDeg;
@@ -1806,6 +2232,41 @@ void VisionDisplayItem::addToolPointMarker(const QString& toolId, const QString&
     addToolGraphic(marker);
 }
 
+void VisionDisplayItem::addToolRect(const QString& toolId, const QString& id, double x, double y, double width, double height, int red, int green, int blue)
+{
+    if (!isFiniteValue(x) || !isFiniteValue(y) || !isFiniteValue(width) || !isFiniteValue(height)
+        || width <= 0.0 || height <= 0.0) {
+        return;
+    }
+
+    GraphicObject rect = baseToolGraphic(toolId,
+                                         toolId + QStringLiteral("_rect_") + id,
+                                         QStringLiteral("ToolRect"),
+                                         GraphicType::Rect,
+                                         QColor(std::clamp(red, 0, 255),
+                                                std::clamp(green, 0, 255),
+                                                std::clamp(blue, 0, 255)));
+    rect.rect = QRectF(x, y, width, height);
+    addToolGraphic(rect);
+}
+
+void VisionDisplayItem::addToolLine(const QString& toolId, const QString& id, double x1, double y1, double x2, double y2, int red, int green, int blue)
+{
+    if (!isFiniteValue(x1) || !isFiniteValue(y1) || !isFiniteValue(x2) || !isFiniteValue(y2)) {
+        return;
+    }
+
+    GraphicObject line = baseToolGraphic(toolId,
+                                         toolId + QStringLiteral("_line_") + id,
+                                         QStringLiteral("ToolLine"),
+                                         GraphicType::Line,
+                                         QColor(std::clamp(red, 0, 255),
+                                                std::clamp(green, 0, 255),
+                                                std::clamp(blue, 0, 255)));
+    line.line = QLineF(QPointF(x1, y1), QPointF(x2, y2));
+    addToolGraphic(line);
+}
+
 void VisionDisplayItem::addCaliperResult(const QString& toolId, double centerX, double centerY, double width, double height, double angleDeg, double searchDirectionAngleDeg, const QVariantList& edgePoints, int bestIndex, double score, const QString& label)
 {
     addLineCaliper(toolId, QStringLiteral("main"), centerX, centerY, width, height, angleDeg, searchDirectionAngleDeg, bestIndex >= 0, centerX, centerY, score);
@@ -1817,6 +2278,10 @@ void VisionDisplayItem::addCaliperResult(const QString& toolId, double centerX, 
         } else {
             const QVariantMap map = value.toMap();
             p = QPointF(map.value(QStringLiteral("x")).toDouble(), map.value(QStringLiteral("y")).toDouble());
+        }
+        if (!isFinitePoint(p)) {
+            ++index;
+            continue;
         }
         GraphicObject edge = baseToolGraphic(toolId, QStringLiteral("%1_candidate_%2").arg(toolId).arg(index), QStringLiteral("Caliper"), GraphicType::PointMarker, index == bestIndex ? QColor(40, 255, 90) : QColor(255, 210, 80), true);
         edge.center = p;
@@ -1892,14 +2357,18 @@ void VisionDisplayItem::addCaliperEdgePoints(const QString& toolId,
         }
 
         const bool selected = index == selectedIndex;
+        const bool withinExpected = map.value(QStringLiteral("withinExpected"), true).toBool();
+        const QColor markerColor = selected
+            ? QColor(40, 255, 90)
+            : (withinExpected ? QColor(255, 210, 80) : QColor(255, 80, 80));
         GraphicObject marker = baseToolGraphic(toolId,
                                                QStringLiteral("%1_caliper_edge_%2").arg(toolId).arg(index),
                                                QStringLiteral("Caliper"),
                                                GraphicType::PointMarker,
-                                               selected ? QColor(40, 255, 90) : QColor(255, 210, 80),
-                                               true);
+                                               markerColor,
+                                               selected || withinExpected);
         marker.center = point;
-        marker.markerSize = selected ? 12.0 : 7.0;
+        marker.markerSize = selected ? 12.0 : (withinExpected ? 7.0 : 9.0);
         marker.style.lineWidth = selected ? 2.5 : 1.5;
         addToolGraphic(marker, false);
 
@@ -1910,13 +2379,14 @@ void VisionDisplayItem::addCaliperEdgePoints(const QString& toolId,
                                                  QStringLiteral("%1_caliper_edge_label_%2").arg(toolId).arg(index),
                                                  QStringLiteral("Caliper"),
                                                  GraphicType::Text,
-                                                 selected ? QColor(40, 255, 90) : QColor(255, 230, 120),
-                                                 true);
+                                                 selected ? QColor(40, 255, 90) : (withinExpected ? QColor(255, 230, 120) : QColor(255, 120, 120)),
+                                                 selected || withinExpected);
             text.textPosition = point + QPointF(8.0, selected ? -18.0 : 12.0);
-            text.text = QStringLiteral("#%1 r=%2 p=%3")
+            text.text = QStringLiteral("#%1 r=%2 p=%3 %4")
                             .arg(index)
                             .arg(response, 0, 'f', 2)
-                            .arg(position1D, 0, 'f', 2);
+                            .arg(position1D, 0, 'f', 2)
+                            .arg(withinExpected ? QStringLiteral("in") : QStringLiteral("out"));
             text.style.fontPixelSize = selected ? 14 : 11;
             addToolGraphic(text, false);
         }
@@ -1972,6 +2442,10 @@ void VisionDisplayItem::addSingleCaliperDebugOverlay(const QString& toolId,
         const QVariantMap item = value.toMap();
         const QPointF point(item.value(QStringLiteral("x")).toDouble(),
                             item.value(QStringLiteral("y")).toDouble());
+        if (!isFinitePoint(point)) {
+            ++index;
+            continue;
+        }
         const bool selected = index == selectedIndex;
         GraphicObject marker = baseToolGraphic(toolId,
                                                QStringLiteral("%1_candidate_%2").arg(toolId).arg(index),
@@ -1985,17 +2459,22 @@ void VisionDisplayItem::addSingleCaliperDebugOverlay(const QString& toolId,
         addToolGraphic(marker, false);
 
         if (selected) {
-            selectedPoint = point;
-            selectedNormal = QPointF(item.value(QStringLiteral("nx")).toDouble(),
-                                     item.value(QStringLiteral("ny")).toDouble());
-            selectedResponse = item.value(QStringLiteral("response")).toDouble();
-            selectedPosition1D = item.value(QStringLiteral("position1D")).toDouble();
-            hasSelected = true;
+            const QPointF normal(item.value(QStringLiteral("nx")).toDouble(),
+                                 item.value(QStringLiteral("ny")).toDouble());
+            const double response = item.value(QStringLiteral("response")).toDouble();
+            const double position1D = item.value(QStringLiteral("position1D")).toDouble();
+            if (isFinitePoint(normal) && isFiniteValue(response) && isFiniteValue(position1D)) {
+                selectedPoint = point;
+                selectedNormal = normal;
+                selectedResponse = response;
+                selectedPosition1D = position1D;
+                hasSelected = true;
+            }
         }
         ++index;
     }
 
-    if (hasSelected) {
+    if (hasSelected && isFiniteValue(height)) {
         const double normalLength = std::max(18.0, height * 0.18);
         GraphicObject normal = baseToolGraphic(toolId, toolId + QStringLiteral("_selected_normal"), QStringLiteral("SingleCaliper"), GraphicType::Arrow, QColor(40, 255, 90), true);
         normal.line = QLineF(selectedPoint, selectedPoint + selectedNormal * normalLength);
@@ -2178,6 +2657,11 @@ QVariantMap VisionDisplayItem::editableCaliperGeometry(const QString& toolId) co
         geometry.insert(QStringLiteral("y1"), found->p1.y());
         geometry.insert(QStringLiteral("x2"), found->p2.x());
         geometry.insert(QStringLiteral("y2"), found->p2.y());
+        geometry.insert(QStringLiteral("centerX"), (found->p1.x() + found->p2.x()) * 0.5);
+        geometry.insert(QStringLiteral("centerY"), (found->p1.y() + found->p2.y()) * 0.5);
+        geometry.insert(QStringLiteral("length"), QLineF(found->p1, found->p2).length());
+        geometry.insert(QStringLiteral("searchLength"), found->caliperHeight);
+        geometry.insert(QStringLiteral("angleDeg"), vectorAngleDeg(found->p2 - found->p1));
         break;
     case EditableCaliperKind::Circle:
         geometry.insert(QStringLiteral("type"), QStringLiteral("circle"));
@@ -2241,6 +2725,33 @@ QSGNode* VisionDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
     }
 
     clearChildNodes(rootNode->overlayNode);
+    if (m_modelRoiVisible && m_modelRoi.isValid()) {
+        GraphicStyle modelStyle;
+        modelStyle.strokeColor = QColor(255, 190, 40);
+        modelStyle.lineWidth = 2.0;
+        modelStyle.lineWidthInViewPixels = true;
+        QSGNode* roiNode = createLineNode(mapPoints(rectPoints(m_modelRoi.normalized()), m_mapper),
+                                          QSGGeometry::DrawLineStrip,
+                                          modelStyle,
+                                          m_mapper.zoom());
+        if (roiNode) {
+            rootNode->overlayNode->appendChildNode(roiNode);
+        }
+
+        if (m_modelRoiEditable) {
+            GraphicStyle handleStyle = modelStyle;
+            handleStyle.strokeColor = QColor(255, 240, 120);
+            handleStyle.lineWidth = 2.5;
+            const QVector<QPointF> handles = rectHandlePoints(m_modelRoi);
+            for (const QPointF& handle : handles) {
+                QSGNode* handleNode = createPointMarkerNode(m_mapper.imageToView(handle), handleStyle, 12.0);
+                if (handleNode) {
+                    rootNode->overlayNode->appendChildNode(handleNode);
+                }
+            }
+        }
+    }
+
     for (const std::unique_ptr<RoiObject>& roi : m_rois.rois()) {
         if (!roi || !roi->visible) {
             continue;
@@ -2255,6 +2766,21 @@ QSGNode* VisionDisplayItem::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeDat
                                           m_mapper.zoom());
         if (roiNode) {
             rootNode->overlayNode->appendChildNode(roiNode);
+        }
+        if (roi->selected && roi->type == RoiType::Rect) {
+            GraphicStyle handleStyle = roiStyle(*roi);
+            handleStyle.strokeColor = QColor(255, 210, 80);
+            handleStyle.lineWidth = 2.0;
+            const QRectF rect = static_cast<const RectRoi*>(roi.get())->rect;
+            const QVector<QPointF> handles = rectHandlePoints(rect);
+            for (const QPointF& handle : handles) {
+                QSGNode* handleNode = createPointMarkerNode(m_mapper.imageToView(handle),
+                                                            handleStyle,
+                                                            11.0);
+                if (handleNode) {
+                    rootNode->overlayNode->appendChildNode(handleNode);
+                }
+            }
         }
     }
 
@@ -2416,6 +2942,23 @@ void VisionDisplayItem::mousePressEvent(QMouseEvent* event)
 
     if (event->button() == Qt::LeftButton) {
         const QPointF imagePoint = m_mapper.viewToImage(event->position());
+        if (beginModelRoiDrag(imagePoint)) {
+            event->accept();
+            return;
+        }
+
+        if (RoiObject* selected = m_rois.selectedRoi()) {
+            if (selected->type == RoiType::Rect && !selected->locked) {
+                const QRectF rect = static_cast<RectRoi*>(selected)->rect;
+                const int handle = rectHandleAt(rect, imagePoint, imageHitTolerance(8.0));
+                if (handle >= 0) {
+                    m_draggingRoi = beginRoiDrag(selected->id, imagePoint);
+                    m_roiDragSnapshot.handle = handle;
+                    event->accept();
+                    return;
+                }
+            }
+        }
         if (beginEditableCaliperDrag(imagePoint)) {
             event->accept();
             return;
@@ -2447,6 +2990,15 @@ void VisionDisplayItem::mouseMoveEvent(QMouseEvent* event)
 
     if (m_editableCaliperDrag.active) {
         if (updateEditableCaliperDrag(m_mapper.viewToImage(event->position()))) {
+            markOverlayDirty();
+            update();
+        }
+        event->accept();
+        return;
+    }
+
+    if (m_modelRoiDrag.active) {
+        if (updateModelRoiDrag(m_mapper.viewToImage(event->position()))) {
             markOverlayDirty();
             update();
         }
@@ -2503,6 +3055,12 @@ void VisionDisplayItem::mouseReleaseEvent(QMouseEvent* event)
         return;
     }
 
+    if (m_modelRoiDrag.active && event->button() == Qt::LeftButton) {
+        m_modelRoiDrag = ModelRoiDrag();
+        event->accept();
+        return;
+    }
+
     if (m_panning && (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton)) {
         m_panning = false;
         const QPointF imagePoint = m_mapper.viewToImage(event->position());
@@ -2520,6 +3078,11 @@ void VisionDisplayItem::mouseDoubleClickEvent(QMouseEvent* event)
     emit imageDoubleClicked(imagePoint.x(), imagePoint.y());
 
     if (event->button() == Qt::LeftButton) {
+        if (m_modelRoiEditable) {
+            resetModelRoi();
+            event->accept();
+            return;
+        }
         fitToWindow();
         event->accept();
         return;
@@ -2531,6 +3094,7 @@ void VisionDisplayItem::mouseDoubleClickEvent(QMouseEvent* event)
 void VisionDisplayItem::hoverMoveEvent(QHoverEvent* event)
 {
     emitMouseImagePosition(event->position());
+    updateModelRoiCursor(m_mapper.viewToImage(event->position()));
     QQuickItem::hoverMoveEvent(event);
 }
 
@@ -2665,7 +3229,9 @@ bool VisionDisplayItem::updateDraggedRoi(const QPointF& currentImagePoint)
 
     switch (m_roiDragSnapshot.type) {
     case RoiType::Rect:
-        static_cast<RectRoi*>(roi)->rect = m_roiDragSnapshot.rect.translated(imageDelta);
+        static_cast<RectRoi*>(roi)->rect = m_roiDragSnapshot.handle >= 0
+            ? resizedRectFromHandle(m_roiDragSnapshot.rect, m_roiDragSnapshot.handle, currentImagePoint)
+            : m_roiDragSnapshot.rect.translated(imageDelta);
         break;
     case RoiType::RotatedRect:
         static_cast<RotatedRectRoi*>(roi)->center = m_roiDragSnapshot.center + imageDelta;
@@ -2687,12 +3253,81 @@ bool VisionDisplayItem::beginEditableCaliperDrag(const QPointF& imagePoint)
     for (const EditableCaliperArray& array : std::as_const(m_editableCalipers)) {
         QVector<QPointF> handles;
         switch (array.kind) {
-        case EditableCaliperKind::Line:
-            handles = {array.p1, array.p2};
+        case EditableCaliperKind::Line: {
+            const QLineF line(array.p1, array.p2);
+            if (line.length() > 0.0001) {
+                const QPointF axis = (array.p2 - array.p1) / line.length();
+                const QPointF normal(-axis.y(), axis.x());
+                const QPointF center = (array.p1 + array.p2) * 0.5;
+                handles = {
+                    array.p1,
+                    array.p2,
+                    center + normal * (array.caliperHeight * 0.5),
+                    center - normal * (array.caliperHeight * 0.5)
+                };
+
+                for (qsizetype i = 0; i < handles.size(); ++i) {
+                    if (pointDistance(imagePoint, handles[i]) <= tolerance) {
+                        m_editableCaliperDrag.active = true;
+                        m_editableCaliperDrag.toolId = array.toolId;
+                        m_editableCaliperDrag.handle = static_cast<int>(i);
+                        m_editableCaliperDrag.original = array;
+                        m_editableCaliperDrag.pressImagePoint = imagePoint;
+                        return true;
+                    }
+                }
+
+                if (pointInRotatedRect(imagePoint,
+                                       center,
+                                       line.length(),
+                                       array.caliperHeight,
+                                       vectorAngleDeg(array.p2 - array.p1),
+                                       tolerance)) {
+                    m_editableCaliperDrag.active = true;
+                    m_editableCaliperDrag.toolId = array.toolId;
+                    m_editableCaliperDrag.handle = 4;
+                    m_editableCaliperDrag.original = array;
+                    m_editableCaliperDrag.pressImagePoint = imagePoint;
+                    return true;
+                }
+            } else {
+                handles = {array.p1, array.p2};
+            }
             break;
-        case EditableCaliperKind::Circle:
-            handles = {array.center, array.center + QPointF(array.radius, 0.0)};
+        }
+        case EditableCaliperKind::Circle: {
+            const double halfSearchLength = array.caliperHeight * 0.5;
+            const double innerRadius = std::max(1.0, array.radius - halfSearchLength);
+            handles = {
+                array.center,
+                array.center + QPointF(array.radius, 0.0),
+                array.center + QPointF(array.radius + halfSearchLength, 0.0),
+                array.center + QPointF(innerRadius, 0.0)
+            };
+
+            for (qsizetype i = 0; i < handles.size(); ++i) {
+                if (pointDistance(imagePoint, handles[i]) <= tolerance) {
+                    m_editableCaliperDrag.active = true;
+                    m_editableCaliperDrag.toolId = array.toolId;
+                    m_editableCaliperDrag.handle = static_cast<int>(i);
+                    m_editableCaliperDrag.original = array;
+                    m_editableCaliperDrag.pressImagePoint = imagePoint;
+                    return true;
+                }
+            }
+
+            const double distance = pointDistance(imagePoint, array.center);
+            if (distance >= innerRadius - tolerance
+                && distance <= array.radius + halfSearchLength + tolerance) {
+                m_editableCaliperDrag.active = true;
+                m_editableCaliperDrag.toolId = array.toolId;
+                m_editableCaliperDrag.handle = 4;
+                m_editableCaliperDrag.original = array;
+                m_editableCaliperDrag.pressImagePoint = imagePoint;
+                return true;
+            }
             break;
+        }
         case EditableCaliperKind::Ellipse:
             handles = {array.center + rotatedVector(array.radiusX, 0.0, array.angleDeg),
                        array.center + rotatedVector(0.0, array.radiusY, array.angleDeg)};
@@ -2745,23 +3380,50 @@ bool VisionDisplayItem::updateEditableCaliperDrag(const QPointF& imagePoint)
 
         const EditableCaliperArray& original = m_editableCaliperDrag.original;
         switch (array.kind) {
-        case EditableCaliperKind::Line:
+        case EditableCaliperKind::Line: {
             if (m_editableCaliperDrag.handle == 0) {
                 array.p1 = imagePoint;
                 array.p2 = original.p2;
-            } else {
+            } else if (m_editableCaliperDrag.handle == 1) {
                 array.p1 = original.p1;
                 array.p2 = imagePoint;
+            } else if (m_editableCaliperDrag.handle == 2 || m_editableCaliperDrag.handle == 3) {
+                const QLineF line(original.p1, original.p2);
+                if (line.length() > 0.0001) {
+                    const QPointF axis = (original.p2 - original.p1) / line.length();
+                    const QPointF normal(-axis.y(), axis.x());
+                    const QPointF center = (original.p1 + original.p2) * 0.5;
+                    const double signedDistance = QPointF::dotProduct(imagePoint - center, normal);
+                    array.p1 = original.p1;
+                    array.p2 = original.p2;
+                    array.caliperHeight = std::max(1.0, std::abs(signedDistance) * 2.0);
+                }
+            } else {
+                const QPointF delta = imagePoint - m_editableCaliperDrag.pressImagePoint;
+                array.p1 = original.p1 + delta;
+                array.p2 = original.p2 + delta;
             }
             break;
+        }
         case EditableCaliperKind::Circle:
             if (m_editableCaliperDrag.handle == 0) {
                 const QPointF delta = imagePoint - m_editableCaliperDrag.pressImagePoint;
                 array.center = original.center + delta;
                 array.radius = original.radius;
-            } else {
+                array.caliperHeight = original.caliperHeight;
+            } else if (m_editableCaliperDrag.handle == 1) {
                 array.center = original.center;
                 array.radius = std::max(1.0, pointDistance(original.center, imagePoint));
+                array.caliperHeight = original.caliperHeight;
+            } else if (m_editableCaliperDrag.handle == 2 || m_editableCaliperDrag.handle == 3) {
+                array.center = original.center;
+                array.radius = original.radius;
+                array.caliperHeight = std::max(1.0, std::abs(pointDistance(original.center, imagePoint) - original.radius) * 2.0);
+            } else {
+                const QPointF delta = imagePoint - m_editableCaliperDrag.pressImagePoint;
+                array.center = original.center + delta;
+                array.radius = original.radius;
+                array.caliperHeight = original.caliperHeight;
             }
             break;
         case EditableCaliperKind::Ellipse: {
@@ -2792,6 +3454,171 @@ bool VisionDisplayItem::updateEditableCaliperDrag(const QPointF& imagePoint)
     return false;
 }
 
+int VisionDisplayItem::modelRoiHandleAt(const QPointF& imagePoint) const
+{
+    if (!m_modelRoiVisible || !m_modelRoiEditable || !m_modelRoi.isValid()) {
+        return -1;
+    }
+    const double tolerance = imageHitTolerance(8.0);
+    const QVector<QPointF> corners = rectHandlePoints(m_modelRoi);
+    for (int i = 0; i < corners.size(); ++i) {
+        if (QLineF(imagePoint, corners[i]).length() <= tolerance) {
+            return i;
+        }
+    }
+    const QVector<QPointF> edges = edgeHandlePoints(m_modelRoi);
+    for (int i = 0; i < edges.size(); ++i) {
+        if (QLineF(imagePoint, edges[i]).length() <= tolerance) {
+            return 8 + i;
+        }
+    }
+    if (m_modelRoi.normalized().contains(imagePoint)) {
+        return 100;
+    }
+    return -1;
+}
+
+bool VisionDisplayItem::beginModelRoiDrag(const QPointF& imagePoint)
+{
+    const int handle = modelRoiHandleAt(imagePoint);
+    if (handle < 0) {
+        return false;
+    }
+    m_modelRoiDrag.active = true;
+    m_modelRoiDrag.handle = handle;
+    m_modelRoiDrag.originalRoi = m_modelRoi.normalized();
+    m_modelRoiDrag.pressImagePoint = imagePoint;
+    return true;
+}
+
+bool VisionDisplayItem::updateModelRoiDrag(const QPointF& imagePoint)
+{
+    if (!m_modelRoiDrag.active) {
+        return false;
+    }
+
+    QRectF roi = m_modelRoiDrag.originalRoi.normalized();
+    const QPointF delta = imagePoint - m_modelRoiDrag.pressImagePoint;
+    if (m_modelRoiDrag.handle == 100) {
+        roi.translate(delta);
+    } else {
+        double left = roi.left();
+        double right = roi.right();
+        double top = roi.top();
+        double bottom = roi.bottom();
+        switch (m_modelRoiDrag.handle) {
+        case 0: left += delta.x(); top += delta.y(); break;
+        case 1: top += delta.y(); break;
+        case 2: right += delta.x(); top += delta.y(); break;
+        case 3: right += delta.x(); break;
+        case 4: right += delta.x(); bottom += delta.y(); break;
+        case 5: bottom += delta.y(); break;
+        case 6: left += delta.x(); bottom += delta.y(); break;
+        case 7: left += delta.x(); break;
+        case 8: top += delta.y(); break;
+        case 9: right += delta.x(); break;
+        case 10: bottom += delta.y(); break;
+        case 11: left += delta.x(); break;
+        default: break;
+        }
+        roi = QRectF(QPointF(left, top), QPointF(right, bottom)).normalized();
+    }
+
+    const QRectF next = boundedModelRoi(roi);
+    if (m_modelRoi == next) {
+        return false;
+    }
+    m_modelRoi = next;
+    emit modelRoiChanged();
+    return true;
+}
+
+QRectF VisionDisplayItem::boundedModelRoi(const QRectF& roi) const
+{
+    const QSize imageSize = m_mapper.imageSize();
+    if (imageSize.isEmpty()) {
+        return roi.normalized();
+    }
+    const QRectF imageRect(0.0, 0.0, imageSize.width(), imageSize.height());
+    QRectF r = roi.normalized();
+    if (r.width() < minModelRoiSize) {
+        r.setWidth(minModelRoiSize);
+    }
+    if (r.height() < minModelRoiSize) {
+        r.setHeight(minModelRoiSize);
+    }
+    if (r.width() > imageRect.width()) {
+        r.setWidth(imageRect.width());
+    }
+    if (r.height() > imageRect.height()) {
+        r.setHeight(imageRect.height());
+    }
+    if (r.left() < imageRect.left()) {
+        r.moveLeft(imageRect.left());
+    }
+    if (r.top() < imageRect.top()) {
+        r.moveTop(imageRect.top());
+    }
+    if (r.right() > imageRect.right()) {
+        r.moveRight(imageRect.right());
+    }
+    if (r.bottom() > imageRect.bottom()) {
+        r.moveBottom(imageRect.bottom());
+    }
+    return r.intersected(imageRect).normalized();
+}
+
+QRectF VisionDisplayItem::defaultModelRoi() const
+{
+    const QSize imageSize = m_mapper.imageSize();
+    if (imageSize.isEmpty()) {
+        return {};
+    }
+    const double w = std::max(minModelRoiSize, imageSize.width() * 0.6);
+    const double h = std::max(minModelRoiSize, imageSize.height() * 0.6);
+    return boundedModelRoi(QRectF((imageSize.width() - w) * 0.5,
+                                  (imageSize.height() - h) * 0.5,
+                                  w,
+                                  h));
+}
+
+void VisionDisplayItem::updateModelRoiCursor(const QPointF& imagePoint)
+{
+    if (!m_modelRoiEditable || !m_modelRoiVisible || !m_modelRoi.isValid()) {
+        unsetCursor();
+        return;
+    }
+    const int handle = modelRoiHandleAt(imagePoint);
+    switch (handle) {
+    case 0:
+    case 4:
+        setCursor(Qt::SizeFDiagCursor);
+        break;
+    case 2:
+    case 6:
+        setCursor(Qt::SizeBDiagCursor);
+        break;
+    case 1:
+    case 5:
+    case 8:
+    case 10:
+        setCursor(Qt::SizeVerCursor);
+        break;
+    case 3:
+    case 7:
+    case 9:
+    case 11:
+        setCursor(Qt::SizeHorCursor);
+        break;
+    case 100:
+        setCursor(Qt::SizeAllCursor);
+        break;
+    default:
+        unsetCursor();
+        break;
+    }
+}
+
 void VisionDisplayItem::rebuildEditableCalipers(const QString& toolId, bool requestUpdate)
 {
     const auto found = std::find_if(m_editableCalipers.begin(),
@@ -2808,7 +3635,24 @@ void VisionDisplayItem::rebuildEditableCalipers(const QString& toolId, bool requ
 
     if (array.kind == EditableCaliperKind::Line) {
         const QLineF line(array.p1, array.p2);
-        const double angleDeg = line.angle() * -1.0;
+        const double length = line.length();
+        const double angleDeg = vectorAngleDeg(array.p2 - array.p1);
+        const QPointF center = (array.p1 + array.p2) * 0.5;
+        const QPointF axis = length > 0.0001 ? (array.p2 - array.p1) / length : QPointF(1.0, 0.0);
+        const QPointF normal(-axis.y(), axis.x());
+
+        GraphicObject outline = baseToolGraphic(toolId, toolId + QStringLiteral("_editable_search_region"), QStringLiteral("EditableLineCalipers"), GraphicType::Polyline, QColor(80, 220, 255));
+        const QPointF halfNormal = normal * (array.caliperHeight * 0.5);
+        outline.points = {
+            array.p1 + halfNormal,
+            array.p2 + halfNormal,
+            array.p2 - halfNormal,
+            array.p1 - halfNormal,
+            array.p1 + halfNormal
+        };
+        outline.style.lineWidth = 1.5;
+        addToolGraphic(outline, false);
+
         GraphicObject baseline = baseToolGraphic(toolId, toolId + QStringLiteral("_editable_baseline"), QStringLiteral("EditableLineCalipers"), GraphicType::Line, QColor(80, 220, 255));
         baseline.line = line;
         baseline.style.lineWidth = 2.0;
@@ -2835,7 +3679,39 @@ void VisionDisplayItem::rebuildEditableCalipers(const QString& toolId, bool requ
             handle.markerSize = 13.0;
             addToolGraphic(handle, false);
         }
+
+        for (int i = 0; i < 2; ++i) {
+            GraphicObject handle = baseToolGraphic(toolId, QStringLiteral("%1_line_height_handle_%2").arg(toolId).arg(i), QStringLiteral("EditableLineCalipers"), GraphicType::PointMarker, QColor(255, 170, 70));
+            handle.center = i == 0 ? center + halfNormal : center - halfNormal;
+            handle.markerSize = 11.0;
+            addToolGraphic(handle, false);
+        }
+
+        GraphicObject moveHandle = baseToolGraphic(toolId, toolId + QStringLiteral("_line_move_handle"), QStringLiteral("EditableLineCalipers"), GraphicType::PointMarker, QColor(80, 220, 255));
+        moveHandle.center = center;
+        moveHandle.markerSize = 10.0;
+        addToolGraphic(moveHandle, false);
     } else if (array.kind == EditableCaliperKind::Circle) {
+        const double halfSearchLength = array.caliperHeight * 0.5;
+        const double innerRadius = std::max(1.0, array.radius - halfSearchLength);
+        const double outerRadius = array.radius + halfSearchLength;
+
+        GraphicObject outerCircle = baseToolGraphic(toolId, toolId + QStringLiteral("_editable_outer_circle"), QStringLiteral("EditableCircleCalipers"), GraphicType::Arc, QColor(80, 220, 255));
+        outerCircle.center = array.center;
+        outerCircle.radius = outerRadius;
+        outerCircle.startAngleDeg = 0.0;
+        outerCircle.spanAngleDeg = 360.0;
+        outerCircle.style.lineWidth = 1.3;
+        addToolGraphic(outerCircle, false);
+
+        GraphicObject innerCircle = baseToolGraphic(toolId, toolId + QStringLiteral("_editable_inner_circle"), QStringLiteral("EditableCircleCalipers"), GraphicType::Arc, QColor(80, 220, 255));
+        innerCircle.center = array.center;
+        innerCircle.radius = innerRadius;
+        innerCircle.startAngleDeg = 0.0;
+        innerCircle.spanAngleDeg = 360.0;
+        innerCircle.style.lineWidth = 1.3;
+        addToolGraphic(innerCircle, false);
+
         GraphicObject circle = baseToolGraphic(toolId, toolId + QStringLiteral("_editable_circle"), QStringLiteral("EditableCircleCalipers"), GraphicType::Arc, QColor(80, 220, 255));
         circle.center = array.center;
         circle.radius = array.radius;
@@ -2867,6 +3743,13 @@ void VisionDisplayItem::rebuildEditableCalipers(const QString& toolId, bool requ
         radiusHandle.center = array.center + QPointF(array.radius, 0.0);
         radiusHandle.markerSize = 13.0;
         addToolGraphic(radiusHandle, false);
+
+        for (int i = 0; i < 2; ++i) {
+            GraphicObject handle = baseToolGraphic(toolId, QStringLiteral("%1_circle_search_handle_%2").arg(toolId).arg(i), QStringLiteral("EditableCircleCalipers"), GraphicType::PointMarker, QColor(255, 170, 70));
+            handle.center = array.center + QPointF(i == 0 ? outerRadius : innerRadius, 0.0);
+            handle.markerSize = 11.0;
+            addToolGraphic(handle, false);
+        }
     } else if (array.kind == EditableCaliperKind::Ellipse) {
         QVector<QPointF> ellipse;
         ellipse.reserve(73);
@@ -2986,14 +3869,20 @@ QVector<QPointF> VisionDisplayItem::pointsFromVariantList(const QVariantList& po
 
     for (const QVariant& pointValue : points) {
         if (pointValue.canConvert<QPointF>()) {
-            result.push_back(pointValue.toPointF());
+            const QPointF point = pointValue.toPointF();
+            if (isFinitePoint(point)) {
+                result.push_back(point);
+            }
             continue;
         }
 
         const QVariantMap pointMap = pointValue.toMap();
         if (pointMap.contains(QStringLiteral("x")) && pointMap.contains(QStringLiteral("y"))) {
-            result.push_back(QPointF(pointMap.value(QStringLiteral("x")).toDouble(),
-                                     pointMap.value(QStringLiteral("y")).toDouble()));
+            const QPointF point(pointMap.value(QStringLiteral("x")).toDouble(),
+                                pointMap.value(QStringLiteral("y")).toDouble());
+            if (isFinitePoint(point)) {
+                result.push_back(point);
+            }
         }
     }
 
@@ -3002,6 +3891,9 @@ QVector<QPointF> VisionDisplayItem::pointsFromVariantList(const QVariantList& po
 
 void VisionDisplayItem::addResultGraphic(const GraphicObject& graphic, bool requestUpdate)
 {
+    if (graphic.id.isEmpty()) {
+        return;
+    }
     m_graphics.addGraphic(graphic);
     if (requestUpdate) {
         markOverlayDirty();
@@ -3011,6 +3903,9 @@ void VisionDisplayItem::addResultGraphic(const GraphicObject& graphic, bool requ
 
 void VisionDisplayItem::addToolGraphic(const GraphicObject& graphic, bool requestUpdate)
 {
+    if (graphic.id.isEmpty()) {
+        return;
+    }
     GraphicObject item = graphic;
     item.toolGraphic = true;
     if (item.layer == static_cast<int>(DisplayLayer::Result)) {
@@ -3078,6 +3973,9 @@ FrameData VisionDisplayItem::frameFromRaw(const uchar* data, int width, int heig
         return frame;
     }
 
+    if (width > std::numeric_limits<int>::max() / bpp) {
+        return frame;
+    }
     const int minimumStride = width * bpp;
     if (stride <= 0) {
         stride = minimumStride;

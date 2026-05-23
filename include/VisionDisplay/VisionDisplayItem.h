@@ -3,6 +3,7 @@
 #include "VisionDisplay/CoordinateMapper.h"
 #include "VisionDisplay/FrameData.h"
 #include "VisionDisplay/GraphicManager.h"
+#include "VisionDisplay/OverlayData.h"
 #include "VisionDisplay/RoiManager.h"
 #include "VisionDisplay/VisionDisplayTypes.h"
 #include "VisionDisplay/VisionDisplay_global.h"
@@ -39,6 +40,9 @@ class VISIONDISPLAY_API VisionDisplayItem : public QQuickItem
     Q_PROPERTY(QString selectedRoiId READ selectedRoiId NOTIFY selectedRoiIdChanged)
     Q_PROPERTY(bool autoFitOnNewImage READ autoFitOnNewImage WRITE setAutoFitOnNewImage NOTIFY autoFitOnNewImageChanged)
     Q_PROPERTY(bool keepViewTransformOnNewImage READ keepViewTransformOnNewImage WRITE setKeepViewTransformOnNewImage NOTIFY keepViewTransformOnNewImageChanged)
+    Q_PROPERTY(QRectF modelRoi READ modelRoi WRITE setModelRoi NOTIFY modelRoiChanged)
+    Q_PROPERTY(bool modelRoiVisible READ modelRoiVisible WRITE setModelRoiVisible NOTIFY modelRoiVisibleChanged)
+    Q_PROPERTY(bool modelRoiEditable READ modelRoiEditable WRITE setModelRoiEditable NOTIFY modelRoiEditableChanged)
 
 public:
     enum InteractionMode {
@@ -85,6 +89,14 @@ public:
     bool keepViewTransformOnNewImage() const;
     Q_INVOKABLE void setKeepViewTransformOnNewImage(bool enabled);
 
+    QRectF modelRoi() const;
+    Q_INVOKABLE void setModelRoi(const QRectF& roi);
+    bool modelRoiVisible() const;
+    Q_INVOKABLE void setModelRoiVisible(bool visible);
+    bool modelRoiEditable() const;
+    Q_INVOKABLE void setModelRoiEditable(bool editable);
+    Q_INVOKABLE void resetModelRoi();
+
     // Thread-safe frame entry points. These methods copy input pixels before returning
     // and use a queued call when invoked outside the item's owning thread.
     void setImage(const QImage& image);
@@ -109,6 +121,7 @@ public:
     Q_INVOKABLE void createCircleRoi(const QString& id, double cx, double cy, double r);
     Q_INVOKABLE void createLineRoi(const QString& id, double x1, double y1, double x2, double y2);
     Q_INVOKABLE void deleteSelectedRoi();
+    Q_INVOKABLE QVariantMap roiGeometry(const QString& id) const;
     QString exportRoisJson() const;
     Q_INVOKABLE bool saveImage(const QString& path) const;
     Q_INVOKABLE bool saveScreenshot(const QString& path, bool withOverlay) const;
@@ -135,6 +148,8 @@ public:
     Q_INVOKABLE void clearToolGraphics(const QString& toolId);
     Q_INVOKABLE void clearAllToolGraphics();
     Q_INVOKABLE void setToolGraphicsVisible(const QString& toolId, bool visible);
+    void setOverlayData(const QString& overlayId, const VisionDisplayOverlayData& data);
+    Q_INVOKABLE void clearOverlayData(const QString& overlayId);
     Q_INVOKABLE void addFindLineSearchRegion(const QString& toolId, double centerX, double centerY, double width, double height, double angleDeg);
     Q_INVOKABLE void addLineCaliper(const QString& toolId, const QString& id, double centerX, double centerY, double width, double height, double angleDeg, double searchDirectionAngleDeg, bool found, double edgeX, double edgeY, double score);
     Q_INVOKABLE void addLineCalipers(const QString& toolId, const QVariantList& calipers);
@@ -150,6 +165,8 @@ public:
     Q_INVOKABLE void addExpectedEllipse(const QString& toolId, double centerX, double centerY, double radiusA, double radiusB, double angleDeg, double startAngleDeg, double spanAngleDeg);
     Q_INVOKABLE void addFittedEllipseResult(const QString& toolId, double centerX, double centerY, double radiusA, double radiusB, double angleDeg, double score, double rmsError, const QString& label);
     Q_INVOKABLE void addToolPointMarker(const QString& toolId, const QString& id, double x, double y, int red, int green, int blue, double markerSize);
+    Q_INVOKABLE void addToolRect(const QString& toolId, const QString& id, double x, double y, double width, double height, int red, int green, int blue);
+    Q_INVOKABLE void addToolLine(const QString& toolId, const QString& id, double x1, double y1, double x2, double y2, int red, int green, int blue);
     Q_INVOKABLE void addCaliperResult(const QString& toolId, double centerX, double centerY, double width, double height, double angleDeg, double searchDirectionAngleDeg, const QVariantList& edgePoints, int bestIndex, double score, const QString& label);
     Q_INVOKABLE void addCaliperRegion(const QString& toolId, double centerX, double centerY, double width, double height, double angleDeg, double searchDirectionAngleDeg, const QString& label);
     Q_INVOKABLE void addCaliperEdgePoints(const QString& toolId, const QVariantList& edgePoints, int selectedIndex, const QString& label, bool showCandidateLabels);
@@ -174,6 +191,9 @@ signals:
     void selectedRoiIdChanged();
     void autoFitOnNewImageChanged();
     void keepViewTransformOnNewImageChanged();
+    void modelRoiChanged();
+    void modelRoiVisibleChanged();
+    void modelRoiEditableChanged();
 
     void mouseImagePositionChanged(double x, double y);
     void imageClicked(double x, double y);
@@ -210,6 +230,7 @@ private:
         double angleDeg = 0.0;
         double radius = 0.0;
         QLineF line;
+        int handle = -1;
         bool valid = false;
     };
 
@@ -245,6 +266,14 @@ private:
         QPointF pressImagePoint;
     };
 
+    struct ModelRoiDrag
+    {
+        bool active = false;
+        int handle = -1;
+        QRectF originalRoi;
+        QPointF pressImagePoint;
+    };
+
     double boundedZoom(double zoom) const;
     QRectF imageViewRect() const;
     void updateMapperViewSize();
@@ -255,6 +284,12 @@ private:
     bool updateDraggedRoi(const QPointF& currentImagePoint);
     bool beginEditableCaliperDrag(const QPointF& imagePoint);
     bool updateEditableCaliperDrag(const QPointF& imagePoint);
+    int modelRoiHandleAt(const QPointF& imagePoint) const;
+    bool beginModelRoiDrag(const QPointF& imagePoint);
+    bool updateModelRoiDrag(const QPointF& imagePoint);
+    QRectF boundedModelRoi(const QRectF& roi) const;
+    QRectF defaultModelRoi() const;
+    void updateModelRoiCursor(const QPointF& imagePoint);
     void rebuildEditableCalipers(const QString& toolId, bool requestUpdate = true);
     void removeEditableCalipers(const QString& toolId);
     QVector<QPointF> pointsFromVariantList(const QVariantList& points) const;
@@ -283,6 +318,10 @@ private:
     QPointF m_lastPanPoint;
     RoiDragSnapshot m_roiDragSnapshot;
     GraphicManager m_graphics;
+    QRectF m_modelRoi;
+    bool m_modelRoiVisible = false;
+    bool m_modelRoiEditable = false;
+    ModelRoiDrag m_modelRoiDrag;
     QList<EditableCaliperArray> m_editableCalipers;
     EditableCaliperDrag m_editableCaliperDrag;
 };

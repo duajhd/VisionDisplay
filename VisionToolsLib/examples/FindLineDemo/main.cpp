@@ -64,6 +64,7 @@ int main(int argc, char* argv[])
     region.length = 360.0;
     region.searchLength = 100.0;
     region.angleDeg = trueAngleDeg;
+    region.searchDirectionAngleDeg = trueAngleDeg + 90.0;
     region.caliperCount = 15;
     region.caliperWidth = 18.0;
 

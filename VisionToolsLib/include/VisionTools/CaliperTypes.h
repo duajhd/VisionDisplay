@@ -46,6 +46,7 @@ struct VISIONTOOLS_API CaliperParams
     EdgeSelection fallbackSelection = EdgeSelection::Strongest;
     double expectedPosition1D = 0.0;
     double maxPositionDeviation = 10.0;
+    bool allowFallbackSelection = false;
     bool enableSubpixel = true;
 };
 
@@ -57,6 +58,7 @@ struct VISIONTOOLS_API CaliperResult
     std::vector<double> gradient;
     std::vector<EdgePoint> candidates;
     std::vector<EdgePoint> selectedEdges;
+    bool selectedByFallback = false;
     QString message;
 };
 

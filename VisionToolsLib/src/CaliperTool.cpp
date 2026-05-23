@@ -40,6 +40,14 @@ double responseAt(double gradient, EdgePolarity polarity)
     return 0.0;
 }
 
+std::vector<EdgePoint> singleEdgeResult(const EdgePoint& edge)
+{
+    std::vector<EdgePoint> result;
+    result.reserve(1);
+    result.push_back(edge);
+    return result;
+}
+
 } // namespace
 
 CaliperTool::CaliperTool() = default;
@@ -71,7 +79,7 @@ CaliperResult CaliperTool::run(const ImageView& image, const CaliperRegion& regi
     result.smoothedProfile = smoothProfile(result.profile);
     result.gradient = computeGradient(result.smoothedProfile);
     result.candidates = detectCandidates(result.gradient, region);
-    result.selectedEdges = selectEdges(result.candidates);
+    result.selectedEdges = selectEdges(result.candidates, &result.selectedByFallback);
     result.ok = !result.selectedEdges.empty();
 
     if (result.ok) {
@@ -79,9 +87,13 @@ CaliperResult CaliperTool::run(const ImageView& image, const CaliperRegion& regi
             ? QStringLiteral("OK; some samples were outside the image")
             : QStringLiteral("OK");
     } else {
-        result.message = result.candidates.empty()
-            ? QStringLiteral("No edge candidate found")
-            : QStringLiteral("No edge selected");
+        if (result.candidates.empty()) {
+            result.message = QStringLiteral("No edge candidate found");
+        } else if (m_params.selection == EdgeSelection::NearestToExpected) {
+            result.message = QStringLiteral("No edge selected inside expected window");
+        } else {
+            result.message = QStringLiteral("No edge selected");
+        }
         if (hadInvalidSamples) {
             result.message += QStringLiteral("; some samples were outside the image");
         }
@@ -235,8 +247,11 @@ std::vector<EdgePoint> CaliperTool::detectCandidates(const std::vector<double>& 
     return candidates;
 }
 
-std::vector<EdgePoint> CaliperTool::selectEdges(const std::vector<EdgePoint>& candidates) const
+std::vector<EdgePoint> CaliperTool::selectEdges(const std::vector<EdgePoint>& candidates, bool* selectedByFallback) const
 {
+    if (selectedByFallback) {
+        *selectedByFallback = false;
+    }
     if (candidates.empty()) {
         return {};
     }
@@ -292,7 +307,11 @@ std::vector<EdgePoint> CaliperTool::selectEdges(const std::vector<EdgePoint>& ca
             const auto selected = std::min_element(expectedCandidates.begin(), expectedCandidates.end(), [&p](const EdgePoint& a, const EdgePoint& b) {
                 return std::abs(a.position1D - p.expectedPosition1D) < std::abs(b.position1D - p.expectedPosition1D);
             });
-            return selected == expectedCandidates.end() ? std::vector<EdgePoint>() : std::vector<EdgePoint>{*selected};
+            return selected == expectedCandidates.end() ? std::vector<EdgePoint>() : singleEdgeResult(*selected);
+        }
+
+        if (!p.allowFallbackSelection) {
+            return {};
         }
 
         EdgeSelection fallback = p.fallbackSelection;
@@ -300,7 +319,10 @@ std::vector<EdgePoint> CaliperTool::selectEdges(const std::vector<EdgePoint>& ca
             fallback = EdgeSelection::Strongest;
         }
         const auto selected = selectByStrategy(fallback, p.expectedPosition1D);
-        return selected == candidates.end() ? std::vector<EdgePoint>() : std::vector<EdgePoint>{*selected};
+        if (selected != candidates.end() && selectedByFallback) {
+            *selectedByFallback = true;
+        }
+        return selected == candidates.end() ? std::vector<EdgePoint>() : singleEdgeResult(*selected);
     }
 
     auto selected = selectByStrategy(p.selection, p.expectedPosition1D);
@@ -314,7 +336,7 @@ std::vector<EdgePoint> CaliperTool::selectEdges(const std::vector<EdgePoint>& ca
         break;
     }
 
-    return selected == candidates.end() ? std::vector<EdgePoint>() : std::vector<EdgePoint>{*selected};
+    return selected == candidates.end() ? std::vector<EdgePoint>() : singleEdgeResult(*selected);
 }
 
 } // namespace VisionTools
