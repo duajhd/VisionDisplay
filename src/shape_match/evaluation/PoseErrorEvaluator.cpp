@@ -38,6 +38,12 @@ PoseError PoseErrorEvaluator::evaluatePoseError(const MatchPose& predicted, cons
     e.dxy = std::sqrt(e.dx * e.dx + e.dy * e.dy);
     e.dthetaRad = wrapToPi(predicted.theta - groundTruth.theta);
     e.dthetaDeg = std::abs(radToDeg(e.dthetaRad));
+    if (m_config.enableAnglePeriodEquivalence && m_config.angleEquivalencePeriodDeg > 1e-6) {
+        const double period = std::clamp(m_config.angleEquivalencePeriodDeg, 1e-6, 360.0);
+        const double reduced = std::fmod(e.dthetaDeg, period);
+        e.dthetaDeg = std::min(reduced, period - reduced);
+        e.dthetaRad = degToRad(e.dthetaDeg);
+    }
     e.dscale = predicted.scale - groundTruth.scale;
     e.xyOk = e.dxy <= m_config.xyOkThresholdPx;
     e.angleOk = e.dthetaDeg <= m_config.angleOkThresholdDeg;

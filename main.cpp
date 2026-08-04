@@ -1,6 +1,7 @@
 #include "IntegratedDemoController.h"
 #include "ShapeModelDebugViewModel.h"
 #include "VisionDisplay/VisionDisplayItem.h"
+#include "shape_match/pipeline_v3/WorkerPoolV3.h"
 
 #include <QCoreApplication>
 #include <QGuiApplication>
@@ -10,6 +11,7 @@
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
+    ShapeMatch::WorkerPoolV3::initializeShared();
 
     IntegratedDemoController integratedController;
     ShapeModelDebugViewModel shapeModelDebug;

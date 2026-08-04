@@ -39,6 +39,7 @@ include(CMakePackageConfigHelpers)
 find_package(Qt6 REQUIRED COMPONENTS Quick Concurrent)
 find_package(OpenCV REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(OpenMP QUIET)
 
 qt_standard_project_setup(REQUIRES 6.8)
 
@@ -142,6 +143,21 @@ add_library(ShapeMatchEval STATIC
     src/shape_match/coarse/MissedTargetStageTrace.h
     src/shape_match/coarse/MissedTargetStageTrace.cpp
     src/shape_match/coarse/VotingConfig.h
+    src/shape_match/coarse/OrientationResponseConfig.h
+    src/shape_match/coarse/OrientationResponseMap.h
+    src/shape_match/coarse/OrientationResponseMap.cpp
+    src/shape_match/coarse/OrientationResponseMapBuilder.h
+    src/shape_match/coarse/OrientationResponseMapBuilder.cpp
+    src/shape_match/coarse/ResponseTemplate.h
+    src/shape_match/coarse/ResponseTemplate.cpp
+    src/shape_match/coarse/ResponseMapEvaluator.h
+    src/shape_match/coarse/ResponseMapEvaluator.cpp
+    src/shape_match/coarse/ResponsePeakExtractor.h
+    src/shape_match/coarse/ResponsePeakExtractor.cpp
+    src/shape_match/coarse/ResponseDebugReport.h
+    src/shape_match/coarse/ResponseDebugReport.cpp
+    src/shape_match/coarse/ResponseCandidateGenerator.h
+    src/shape_match/coarse/ResponseCandidateGenerator.cpp
     src/shape_match/coarse/SparseAccumulator.h
     src/shape_match/coarse/SparseAccumulator.cpp
     src/shape_match/coarse/RTTable.h
@@ -168,9 +184,67 @@ add_library(ShapeMatchEval STATIC
     src/shape_match/io/MatchReportWriter.cpp
     src/shape_match/io/VisionProGroundTruthReader.h
     src/shape_match/io/VisionProGroundTruthReader.cpp
+    src/shape_match/io/ResponseDebugReportWriter.h
+    src/shape_match/io/ResponseDebugReportWriter.cpp
+    src/shape_match/io/DirectionalChamferReportWriter.h
+    src/shape_match/io/DirectionalChamferReportWriter.cpp
     src/shape_match/overlay/ShapeMatchOverlayData.h
     src/shape_match/overlay/MatchDebugOverlayAdapter.h
     src/shape_match/overlay/MatchDebugOverlayAdapter.cpp
+    src/shape_match/pipeline_v2/ShapeMatchPipelineV2Config.h
+    src/shape_match/pipeline_v2/ShapeMatchPipelineV2Context.h
+    src/shape_match/pipeline_v2/ShapeMatchPipelineV2Result.h
+    src/shape_match/pipeline_v2/IShapeCandidateGenerator.h
+    src/shape_match/pipeline_v2/OldVotingCandidateGeneratorAdapter.h
+    src/shape_match/pipeline_v2/OldVotingCandidateGeneratorAdapter.cpp
+    src/shape_match/pipeline_v2/ResponsePeakVerifier.h
+    src/shape_match/pipeline_v2/ResponsePeakVerifier.cpp
+    src/shape_match/pipeline_v2/ResponsePeakCandidateSelector.h
+    src/shape_match/pipeline_v2/ResponsePeakCandidateSelector.cpp
+    src/shape_match/pipeline_v2/ResponsePeakRegionGenerator.h
+    src/shape_match/pipeline_v2/ResponsePeakRegionGenerator.cpp
+    src/shape_match/pipeline_v2/DirectionalChamferScore.h
+    src/shape_match/pipeline_v2/DirectionalDistanceField.h
+    src/shape_match/pipeline_v2/DirectionalDistanceField.cpp
+    src/shape_match/pipeline_v2/DirectionalDistanceFieldBuilder.h
+    src/shape_match/pipeline_v2/DirectionalDistanceFieldBuilder.cpp
+    src/shape_match/pipeline_v2/SegmentTemplate.h
+    src/shape_match/pipeline_v2/SegmentTemplate.cpp
+    src/shape_match/pipeline_v2/DirectionalChamferVerifier.h
+    src/shape_match/pipeline_v2/DirectionalChamferVerifier.cpp
+    src/shape_match/pipeline_v2/DirectionalChamferDebugReport.h
+    src/shape_match/pipeline_v2/MicroAdjustProfile.h
+    src/shape_match/pipeline_v2/RuntimeBufferPool.h
+    src/shape_match/pipeline_v2/RuntimeBufferPool.cpp
+    src/shape_match/pipeline_v2/TemplateRuntimeCache.h
+    src/shape_match/pipeline_v2/TemplateRuntimeCache.cpp
+    src/shape_match/pipeline_v2/DirectionalFieldCache.h
+    src/shape_match/pipeline_v2/DirectionalFieldCache.cpp
+    src/shape_match/pipeline_v2/ParallelThetaResponseEvaluator.h
+    src/shape_match/pipeline_v2/ParallelThetaResponseEvaluator.cpp
+    src/shape_match/pipeline_v2/ParallelDirectionalChamferVerifier.h
+    src/shape_match/pipeline_v2/ParallelDirectionalChamferVerifier.cpp
+    src/shape_match/pipeline_v2/ShapeMatchPipelineV2.h
+    src/shape_match/pipeline_v2/ShapeMatchPipelineV2.cpp
+    src/shape_match/pipeline_v3/ShapeMatchV3Types.h
+    src/shape_match/pipeline_v3/WorkerPoolV3.h
+    src/shape_match/pipeline_v3/WorkerPoolV3.cpp
+    src/shape_match/pipeline_v3/ResponseMapBuilderV3.h
+    src/shape_match/pipeline_v3/ResponseMapBuilderV3.cpp
+    src/shape_match/pipeline_v3/AngleViewBuilderV3.h
+    src/shape_match/pipeline_v3/AngleViewBuilderV3.cpp
+    src/shape_match/pipeline_v3/ScoreKernelV3.h
+    src/shape_match/pipeline_v3/ScoreKernelV3Scalar.cpp
+    src/shape_match/pipeline_v3/ScoreKernelV3Avx2.cpp
+    src/shape_match/pipeline_v3/ScoreKernelV3Avx512.cpp
+    src/shape_match/pipeline_v3/CoarseSearchV3.h
+    src/shape_match/pipeline_v3/CoarseSearchV3.cpp
+    src/shape_match/pipeline_v3/ShapeMatcherV3.h
+    src/shape_match/pipeline_v3/ShapeMatcherV3.cpp
+    src/shape_match/pipeline_v3/PoseRefinerV3.h
+    src/shape_match/pipeline_v3/PoseRefinerV3.cpp
+    src/shape_match/pipeline_v3/ShapeMatchV3Diagnostic.h
+    src/shape_match/pipeline_v3/ShapeMatchV3Diagnostic.cpp
     src/shape_match/tests/ShapeMatchEvalSelfTest.h
     src/shape_match/tests/ShapeMatchEvalSelfTest.cpp
 )
@@ -188,7 +262,37 @@ target_link_libraries(ShapeMatchEval
         ${OpenCV_LIBS}
 )
 
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(ShapeMatchEval PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+if(MSVC)
+    target_compile_options(ShapeMatchEval PRIVATE $<$<CONFIG:Release>:/O2>)
+else()
+    target_compile_options(ShapeMatchEval PRIVATE $<$<CONFIG:Release>:-O3>)
+endif()
+
 enable_msvc_asan(ShapeMatchEval)
+
+if(MSVC)
+    set_source_files_properties(
+        src/shape_match/pipeline_v3/ScoreKernelV3Avx2.cpp
+        PROPERTIES COMPILE_OPTIONS "/arch:AVX2"
+    )
+    set_source_files_properties(
+        src/shape_match/pipeline_v3/ScoreKernelV3Avx512.cpp
+        PROPERTIES COMPILE_OPTIONS "/arch:AVX512"
+    )
+else()
+    set_source_files_properties(
+        src/shape_match/pipeline_v3/ScoreKernelV3Avx2.cpp
+        PROPERTIES COMPILE_OPTIONS "-mavx2"
+    )
+    set_source_files_properties(
+        src/shape_match/pipeline_v3/ScoreKernelV3Avx512.cpp
+        PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512dq"
+    )
+endif()
 
 add_library(ShapeMatchVisionDisplayOverlay STATIC
     src/shape_match/overlay/VisionDisplayOverlayAdapter.h
@@ -306,6 +410,95 @@ target_link_libraries(LargeImageRoiDistanceFieldSelfTest
 )
 
 enable_msvc_asan(LargeImageRoiDistanceFieldSelfTest)
+
+add_executable(ShapeMatchPipelineV2SelfTest
+    src/shape_match/tests/ShapeMatchPipelineV2SelfTest.cpp
+)
+
+target_link_libraries(ShapeMatchPipelineV2SelfTest
+    PRIVATE ShapeMatchEval
+)
+
+enable_msvc_asan(ShapeMatchPipelineV2SelfTest)
+
+add_executable(ResponseCandidateGeneratorSelfTest
+    src/shape_match/tests/ResponseCandidateGeneratorSelfTest.cpp
+)
+
+target_link_libraries(ResponseCandidateGeneratorSelfTest
+    PRIVATE ShapeMatchEval
+)
+
+enable_msvc_asan(ResponseCandidateGeneratorSelfTest)
+
+add_executable(ResponseVsOldPipelineTest
+    src/shape_match/tests/ResponseVsOldPipelineTest.cpp
+)
+
+target_link_libraries(ResponseVsOldPipelineTest
+    PRIVATE ShapeMatchEval
+)
+
+enable_msvc_asan(ResponseVsOldPipelineTest)
+
+add_executable(ShapeMatchPipelineV2ResponseSelfTest
+    src/shape_match/tests/ShapeMatchPipelineV2ResponseSelfTest.cpp
+)
+
+target_link_libraries(ShapeMatchPipelineV2ResponseSelfTest
+    PRIVATE ShapeMatchEval
+)
+
+enable_msvc_asan(ShapeMatchPipelineV2ResponseSelfTest)
+
+add_executable(DirectionalChamferVerifierSelfTest
+    src/shape_match/tests/DirectionalChamferVerifierSelfTest.cpp
+)
+
+target_link_libraries(DirectionalChamferVerifierSelfTest
+    PRIVATE ShapeMatchEval
+)
+
+enable_msvc_asan(DirectionalChamferVerifierSelfTest)
+
+add_executable(ShapeMatchPipelineV2DirectionalChamferSelfTest
+    src/shape_match/tests/ShapeMatchPipelineV2DirectionalChamferSelfTest.cpp
+)
+
+target_link_libraries(ShapeMatchPipelineV2DirectionalChamferSelfTest
+    PRIVATE ShapeMatchEval
+)
+
+enable_msvc_asan(ShapeMatchPipelineV2DirectionalChamferSelfTest)
+
+add_executable(ShapeMatchPipelineV2Benchmark
+    src/shape_match/tests/ShapeMatchPipelineV2Benchmark.cpp
+)
+
+target_link_libraries(ShapeMatchPipelineV2Benchmark
+    PRIVATE ShapeMatchEval
+)
+
+enable_msvc_asan(ShapeMatchPipelineV2Benchmark)
+
+add_executable(ShapeMatchV3SelfTest
+    src/shape_match/tests/ShapeMatchV3SelfTest.cpp
+)
+target_link_libraries(ShapeMatchV3SelfTest PRIVATE ShapeMatchEval ${OpenCV_LIBS})
+enable_msvc_asan(ShapeMatchV3SelfTest)
+
+add_executable(ShapeMatchV3Benchmark
+    src/shape_match/tests/ShapeMatchV3Benchmark.cpp
+)
+target_link_libraries(ShapeMatchV3Benchmark PRIVATE ShapeMatchEval ${OpenCV_LIBS})
+enable_msvc_asan(ShapeMatchV3Benchmark)
+
+enable_testing()
+add_test(NAME ShapeMatchV3SelfTest COMMAND ShapeMatchV3SelfTest)
+set_tests_properties(ShapeMatchV3SelfTest PROPERTIES
+    ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:ShapeMatchV3SelfTest>;PATH=path_list_prepend:${CMAKE_CURRENT_SOURCE_DIR}/vcpkg_installed/x64-windows/bin"
+)
 
 set_target_properties(VisionDisplay PROPERTIES
     VERSION ${PROJECT_VERSION}

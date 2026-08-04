@@ -4,9 +4,15 @@
 #include "VisionTools/Matching/ShapeModelBuilder.h"
 #include "shape_match/coarse/CoarseMatchDebugOverlay.h"
 #include "shape_match/coarse/CoarseShapeMatcher.h"
+#include "shape_match/coarse/ImagePyramid.h"
+#include "shape_match/coarse/TemplatePyramid.h"
 #include "shape_match/core/EdgeImageData.h"
 #include "shape_match/io/VisionProGroundTruthReader.h"
 #include "shape_match/overlay/VisionDisplayOverlayAdapter.h"
+#include "shape_match/pipeline_v2/ShapeMatchPipelineV2.h"
+#include "shape_match/pipeline_v3/ResponseMapBuilderV3.h"
+#include "shape_match/pipeline_v3/ShapeMatchV3Diagnostic.h"
+#include "shape_match/pipeline_v3/ShapeMatcherV3.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -20,6 +26,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <numeric>
 
 namespace {
@@ -164,6 +171,136 @@ ShapeMatch::CoarseMatchReport spatiallyFilteredReport(const ShapeMatch::CoarseMa
         }
     }
     return filtered;
+}
+
+std::vector<cv::Point2d> transformedRect(const cv::Rect2d& rect, const ShapeMatch::MatchPose& pose)
+{
+    const std::vector<cv::Point2d> corners{
+        cv::Point2d(rect.x, rect.y),
+        cv::Point2d(rect.x + rect.width, rect.y),
+        cv::Point2d(rect.x + rect.width, rect.y + rect.height),
+        cv::Point2d(rect.x, rect.y + rect.height)
+    };
+    std::vector<cv::Point2d> out;
+    out.reserve(5);
+    for (const cv::Point2d& p : corners) {
+        out.push_back(pose.transformPoint(p));
+    }
+    if (!out.empty()) {
+        out.push_back(out.front());
+    }
+    return out;
+}
+
+ShapeMatch::ShapeMatchOverlayData buildPipelineV2Overlay(const ShapeMatch::ShapeTemplateModel& model,
+                                                         const ShapeMatch::ShapeMatchPipelineV2Result& result,
+                                                         int maxCandidates)
+{
+    ShapeMatch::ShapeMatchOverlayData data;
+    const int count = std::min<int>(maxCandidates, static_cast<int>(result.candidates.size()));
+    for (int i = 0; i < count; ++i) {
+        const ShapeMatch::MatchPose& pose = result.candidates[static_cast<size_t>(i)];
+        const std::string color = i == 0 ? "#22c55e" : (i < 5 ? "#5ac8fa" : "#8a8f98");
+
+        ShapeMatch::ShapeMatchOverlayPolyline contour;
+        contour.color = color;
+        contour.width = i == 0 ? 2.6 : 1.1;
+        contour.label = "pipelinev2 rank " + std::to_string(i + 1);
+        contour.points.reserve(model.points.size() + 1);
+        for (const ShapeMatch::TemplatePoint& p : model.points) {
+            contour.points.push_back(pose.transformPoint(p.position));
+        }
+        if (!contour.points.empty()) {
+            contour.points.push_back(contour.points.front());
+            data.polylines.push_back(std::move(contour));
+        }
+
+        if (model.boundingBox.width > 0.0 && model.boundingBox.height > 0.0) {
+            ShapeMatch::ShapeMatchOverlayPolyline roi;
+            roi.color = color;
+            roi.width = i == 0 ? 2.2 : 1.0;
+            roi.label = "PipelineV2 ROI " + std::to_string(i + 1);
+            roi.points = transformedRect(model.boundingBox, pose);
+            data.polylines.push_back(std::move(roi));
+        }
+
+        ShapeMatch::ShapeMatchOverlayPoint center;
+        center.pos = cv::Point2d(pose.x, pose.y);
+        center.color = color;
+        center.radius = i == 0 ? 5.0 : 3.0;
+        center.label = "v2 " + std::to_string(i + 1);
+        data.points.push_back(center);
+
+        const double axisLen = i == 0 ? 35.0 : 22.0;
+        data.lines.push_back({center.pos, pose.transformPoint(cv::Point2d(axisLen, 0.0)), "#ff5050", i == 0 ? 2.0 : 1.0});
+        data.lines.push_back({center.pos, pose.transformPoint(cv::Point2d(0.0, axisLen)), "#50ff50", i == 0 ? 2.0 : 1.0});
+
+        ShapeMatch::ShapeMatchOverlayText text;
+        text.pos = cv::Point2d(pose.x + 8.0, pose.y + 12.0 + (i + 1) * 13.0);
+        text.text = "PipelineV2 rank " + std::to_string(i + 1);
+        text.color = color;
+        text.fontSize = i == 0 ? 15 : 12;
+        data.texts.push_back(std::move(text));
+    }
+    return data;
+}
+
+ShapeMatch::ShapeMatchOverlayData buildShapeMatchV3Overlay(
+    const ShapeMatch::ShapeTemplateModel& model,
+    const std::vector<ShapeMatch::MatchResultV3>& results,
+    int maxCandidates)
+{
+    ShapeMatch::ShapeMatchOverlayData data;
+    const int count = std::min<int>(maxCandidates, static_cast<int>(results.size()));
+    for (int i = 0; i < count; ++i) {
+        const ShapeMatch::MatchResultV3& match = results[static_cast<size_t>(i)];
+        const ShapeMatch::MatchPose& pose = match.pose;
+        const std::string color = i == 0 ? "#ffb020" : (i < 5 ? "#b78cff" : "#8a8f98");
+
+        ShapeMatch::ShapeMatchOverlayPolyline contour;
+        contour.color = color;
+        contour.width = i == 0 ? 2.8 : 1.2;
+        contour.label = "shapematchv3 rank " + std::to_string(i + 1);
+        contour.points.reserve(model.points.size() + 1);
+        for (const ShapeMatch::TemplatePoint& point : model.points) {
+            contour.points.push_back(pose.transformPoint(point.position));
+        }
+        if (!contour.points.empty()) {
+            contour.points.push_back(contour.points.front());
+            data.polylines.push_back(std::move(contour));
+        }
+
+        if (model.boundingBox.width > 0.0 && model.boundingBox.height > 0.0) {
+            ShapeMatch::ShapeMatchOverlayPolyline box;
+            box.color = color;
+            box.width = i == 0 ? 2.4 : 1.0;
+            box.label = "ShapeMatchV3 ROI " + std::to_string(i + 1);
+            box.points = transformedRect(model.boundingBox, pose);
+            data.polylines.push_back(std::move(box));
+        }
+
+        ShapeMatch::ShapeMatchOverlayPoint center;
+        center.pos = cv::Point2d(pose.x, pose.y);
+        center.color = color;
+        center.radius = i == 0 ? 5.5 : 3.0;
+        center.label = "v3 " + std::to_string(i + 1);
+        data.points.push_back(center);
+
+        const double axisLength = i == 0 ? 38.0 : 24.0;
+        data.lines.push_back({center.pos, pose.transformPoint(cv::Point2d(axisLength, 0.0)),
+                              "#ff5050", i == 0 ? 2.0 : 1.0});
+        data.lines.push_back({center.pos, pose.transformPoint(cv::Point2d(0.0, axisLength)),
+                              "#50ff50", i == 0 ? 2.0 : 1.0});
+
+        ShapeMatch::ShapeMatchOverlayText label;
+        label.pos = cv::Point2d(pose.x + 8.0, pose.y + 14.0 + i * 14.0);
+        label.text = "V3 #" + std::to_string(i + 1)
+            + " score=" + std::to_string(match.score).substr(0, 5);
+        label.color = color;
+        label.fontSize = i == 0 ? 15 : 12;
+        data.texts.push_back(std::move(label));
+    }
+    return data;
 }
 
 QRect boundedRoiRect(const QRectF& roi, const QSize& imageSize, int minSize)
@@ -445,7 +582,7 @@ bool ShapeModelDebugViewModel::buildModelFromRoi()
 
     VisionTools::Matching::ShapeModelParams params;
     params.pyramidLevels = 4;
-    params.buildDebugImage = true;
+    params.buildDebugImage = false;
     params.debugOutputDir = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("shape_model_debug"));
 
     VisionTools::Matching::ShapeModelBuilder builder;
@@ -660,6 +797,370 @@ void ShapeModelDebugViewModel::runCoarseMatch()
                              .arg(drawnTop.score.inlierRatio, 0, 'f', 3)
                              .arg(static_cast<int>(overlayReport.finalRankedCandidates.size()));
         return result;
+    }));
+}
+
+void ShapeModelDebugViewModel::runPipelineV2Match()
+{
+    if (m_coarseMatchingRunning) {
+        return;
+    }
+    if (!m_display) {
+        setStatus(QStringLiteral("Display is not ready."));
+        return;
+    }
+    if (m_templateImage.isNull()) {
+        setStatus(QStringLiteral("Load an image first."));
+        return;
+    }
+    if (!hasCoarseTemplateSource(m_model)) {
+        setStatus(QStringLiteral("Build model from ROI first. Current ROI has no usable edge candidates."));
+        return;
+    }
+
+    const QImage image = m_templateImage.copy();
+    const VisionTools::Matching::ShapeTemplateModel model = m_model;
+    const QString groundTruthPath = m_groundTruthPath;
+    const bool useSearchRoi = m_searchRoiEnabled && !m_searchRoi.isEmpty();
+    const QRect searchRect = useSearchRoi
+        ? boundedRoiRect(m_searchRoi, m_templateImage.size(), 32)
+        : QRect();
+    if (useSearchRoi && searchRect.isEmpty()) {
+        setStatus(QStringLiteral("Search ROI is too small. Minimum is 32 x 32."));
+        return;
+    }
+
+    m_lastCoarseSummary.clear();
+    setCoarseMatchFinished(false);
+    setCoarseMatchingRunning(true);
+    setStatus(QStringLiteral("PipelineV2 matching running..."));
+    m_display->clearOverlayData(QStringLiteral("CoarseMatchOverlay"));
+
+    m_coarseWatcher.setFuture(QtConcurrent::run([image, model, searchRect, groundTruthPath]() {
+        CoarseMatchUiResult result;
+        const ShapeMatch::ShapeTemplateModel coarseModel = toCoarseTemplateModel(model);
+        if (coarseModel.empty()) {
+            result.message = QStringLiteral("PipelineV2 failed: model has no template points.");
+            return result;
+        }
+        const ShapeMatch::EdgeImageData edgeData = edgeDataFromImage(image, searchRect);
+        if (edgeData.empty()) {
+            result.message = QStringLiteral("PipelineV2 failed: no edge data.");
+            return result;
+        }
+
+        std::vector<ShapeMatch::GroundTruthInstance> gt;
+        QString gtLabel;
+        if (!groundTruthPath.isEmpty()) {
+            ShapeMatch::VisionProGroundTruthReader reader;
+            const ShapeMatch::VisionProGroundTruthReadResult gtRead = reader.read(groundTruthPath.toStdString());
+            if (gtRead.ok()) {
+                gt = gtRead.instances;
+                gtLabel = QStringLiteral("VisionProGT=%1").arg(static_cast<int>(gt.size()));
+            } else {
+                result.message = QStringLiteral("VisionPro GT load failed: %1").arg(QString::fromStdString(gtRead.error));
+                return result;
+            }
+        } else {
+            gt.push_back({"model_roi_origin",
+                          ShapeMatch::MatchPose::fromDeg(model.originImage.x(), model.originImage.y(), 0.0, 1.0)});
+            gtLabel = QStringLiteral("pseudoGT=model_roi_origin");
+        }
+
+        ShapeMatch::CoarseMatchConfig pyramidConfig;
+        pyramidConfig.pyramidLevels = 4;
+        pyramidConfig.maxTemplatePointsPerLevel = 160;
+        pyramidConfig.roiDistanceField.enableRoiDistanceField = false;
+        pyramidConfig.roiDistanceField.buildFullDistanceFieldForLevel0 = true;
+
+        ShapeMatch::ImagePyramid imagePyramid;
+        ShapeMatch::TemplatePyramid templatePyramid;
+        if (!imagePyramid.build(edgeData, pyramidConfig.pyramidLevels, pyramidConfig)) {
+            result.message = QStringLiteral("PipelineV2 failed: image pyramid build failed.");
+            return result;
+        }
+        if (!templatePyramid.build(coarseModel, pyramidConfig.pyramidLevels, pyramidConfig.maxTemplatePointsPerLevel)) {
+            result.message = QStringLiteral("PipelineV2 failed: template pyramid build failed.");
+            return result;
+        }
+
+        ShapeMatch::ShapeMatchPipelineV2Context context;
+        context.templateModel = &coarseModel;
+        context.edgeData = &edgeData;
+        context.imagePyramid = &imagePyramid;
+        context.templatePyramid = &templatePyramid;
+        context.groundTruth = gt;
+        context.imageName = "ui_current_image";
+        context.templateName = coarseModel.templateId;
+
+        ShapeMatch::ShapeMatchPipelineV2Config config;
+        config.candidateGenerationMode = ShapeMatch::CandidateGenerationMode::OrientationResponse;
+        config.pyramidLevel = 0;
+        config.maxCandidates = 1000;
+        config.enableDebugReport = true;
+        config.enableGtEvaluation = true;
+        config.responsePipeline.executionMode = ShapeMatch::PipelineV2ExecutionMode::FullCoarseMatch;
+        config.responsePipeline.responsePyramidLevel = std::min(3, imagePyramid.levelCount() - 1);
+        config.responsePipeline.maxResponsePeaks = 1000;
+        config.responsePipeline.maxVerifiedResponsePeaks = 300;
+        config.responsePipeline.maxFinalCandidates = 80;
+        config.responsePipeline.targetFinalCandidates = 40;
+        config.responsePipeline.outputOnlyAcceptedFinalCandidates = false;
+        config.responsePipeline.maxOutputCandidates = 12;
+        config.responsePipeline.minOutputFinalScore = 0.35;
+        config.responsePipeline.minOutputScoreRelativeToBest = 0.52;
+        config.responsePipeline.finalOutputNmsPx = 80.0;
+        config.responsePipeline.finalOutputNmsIgnoreAngle = true;
+        config.responsePipeline.maxCandidatesPerTile = 8;
+        config.responsePipeline.enableFinalRanker = true;
+        config.responsePipeline.responseCandidateNmsPx = 14.0;
+        config.responsePipeline.responseCandidateNmsThetaDeg = 8.0;
+        config.responsePipeline.enableMicroAdjustment = true;
+        config.responsePipeline.microAdjustRadiusPx = 1;
+        config.responsePipeline.microAdjustAngleRadiusDeg = 5.0;
+        config.responsePipeline.maxMicroAdjustChildrenPerPeak = 15;
+        config.responsePipeline.enableLevel0FinalPoseMicroAdjustment = true;
+        config.responsePipeline.microAdjustMode = ShapeMatch::MicroAdjustMode::Minimal;
+        config.responsePipeline.microAdjustMaxInputCandidates = 8;
+        config.responsePipeline.microAdjustTargetInputCandidates = 8;
+        config.responsePipeline.microAdjustMaxChildrenPerCandidate = 9;
+        config.responsePipeline.microAdjustMaxTotalChildren = 120;
+        config.responsePipeline.microAdjustUseDirectionalChamfer = true;
+        config.responsePipeline.microAdjustMaxTemplatePoints = 220;
+        config.responsePipeline.finalPoseMicroAdjustRadiusPx = 6;
+        config.responsePipeline.finalPoseMicroAdjustStepPx = 2;
+        config.responsePipeline.finalPoseMicroAdjustAngleRadiusDeg = 1.0;
+        config.responsePipeline.finalPoseMicroAdjustAngleStepDeg = 1.0;
+        config.orientationResponseConfig.thetaBinCount = 36;
+        config.orientationResponseConfig.thetaMinDeg = -185.0;
+        config.orientationResponseConfig.thetaMaxDeg = 175.0;
+        config.orientationResponseConfig.maxTemplateResponsePoints = 80;
+        config.orientationResponseConfig.maxTotalPeaks = config.responsePipeline.maxResponsePeaks;
+        config.orientationResponseConfig.maxPeaksPerTheta = 160;
+        config.orientationResponseConfig.maxPeaksPerTile = 8;
+        config.orientationResponseConfig.minResponseScore = 0.005;
+        config.orientationResponseConfig.spatialSpreadRadiusPx = 3;
+        config.directionalChamfer.maxCandidatesToVerify = config.responsePipeline.maxVerifiedResponsePeaks;
+        config.directionalChamfer.targetCandidatesAfterVerify = config.responsePipeline.maxFinalCandidates;
+        config.symmetry.assume180DegreeSymmetry = true;
+        config.symmetry.symmetryNmsTranslationPx = 18.0;
+        config.symmetry.symmetryNmsAngleToleranceDeg = 10.0;
+        config.production.runtimeMode = ShapeMatch::ShapeMatchRuntimeMode::Production;
+        config.production.numWorkerThreads = 0;
+        config.production.enableRuntimeCaches = true;
+        config.production.enableParallelChamferVerification = true;
+
+        ShapeMatch::ShapeMatchPipelineV2 pipeline(config);
+        const ShapeMatch::ShapeMatchPipelineV2Result pipelineResult = pipeline.run(context);
+        if (!pipelineResult.ok || pipelineResult.candidates.empty()) {
+            result.message = QStringLiteral("PipelineV2 produced no candidates: %1")
+                                 .arg(QString::fromStdString(pipelineResult.failureReason));
+            return result;
+        }
+
+        result.overlay = buildPipelineV2Overlay(coarseModel, pipelineResult, 120);
+        if (result.overlay.empty()) {
+            result.message = QStringLiteral("PipelineV2 done, but no overlay candidates. reports=data/shape_match/reports");
+            return result;
+        }
+
+        result.ok = true;
+        const ShapeMatch::MatchPose& top = pipelineResult.candidates.front();
+        const QString roiText = searchRect.isEmpty()
+            ? QStringLiteral("full image")
+            : QStringLiteral("searchRoi=(%1,%2,%3,%4)")
+                  .arg(searchRect.x())
+                  .arg(searchRect.y())
+                  .arg(searchRect.width())
+                  .arg(searchRect.height());
+        result.message = QStringLiteral("PipelineV2 done. %1 %2 top1 x=%3 y=%4 theta=%5 candidates=%6 selected=%7 peaks=%8 recall=%9 totalMs=%10 responseMs=%11 chamferMs=%12 finalMs=%13; reports=data/shape_match/reports")
+                             .arg(roiText)
+                             .arg(gtLabel)
+                             .arg(top.x, 0, 'f', 1)
+                             .arg(top.y, 0, 'f', 1)
+                             .arg(top.thetaDeg(), 0, 'f', 2)
+                             .arg(static_cast<int>(pipelineResult.candidates.size()))
+                             .arg(pipelineResult.selectedCandidateCount)
+                             .arg(pipelineResult.responsePeakCount)
+                             .arg(pipelineResult.recall, 0, 'f', 3)
+                             .arg(pipelineResult.totalTimeMs, 0, 'f', 1)
+                             .arg(pipelineResult.responseGenerationMs, 0, 'f', 1)
+                             .arg(pipelineResult.directionalChamferTimeMs, 0, 'f', 1)
+                             .arg(pipelineResult.finalRankerMs, 0, 'f', 1);
+        return result;
+    }));
+}
+
+void ShapeModelDebugViewModel::runShapeMatchV3()
+{
+    if (m_coarseMatchingRunning) {
+        return;
+    }
+    if (!m_display) {
+        setStatus(QStringLiteral("Display is not ready."));
+        return;
+    }
+    if (m_templateImage.isNull()) {
+        setStatus(QStringLiteral("Load an image first."));
+        return;
+    }
+    if (!hasCoarseTemplateSource(m_model)) {
+        setStatus(QStringLiteral("Build model from ROI first. Current ROI has no usable edge candidates."));
+        return;
+    }
+
+    const QImage image = m_templateImage.copy();
+    const VisionTools::Matching::ShapeTemplateModel model = m_model;
+    const QString groundTruthPath = m_groundTruthPath;
+    const bool useSearchRoi = m_searchRoiEnabled && !m_searchRoi.isEmpty();
+    const QRect searchRect = useSearchRoi
+        ? boundedRoiRect(m_searchRoi, m_templateImage.size(), 32)
+        : QRect();
+    if (useSearchRoi && searchRect.isEmpty()) {
+        setStatus(QStringLiteral("Search ROI is too small. Minimum is 32 x 32."));
+        return;
+    }
+
+    m_lastCoarseSummary.clear();
+    setCoarseMatchFinished(false);
+    setCoarseMatchingRunning(true);
+    setStatus(QStringLiteral("ShapeMatch V3 running..."));
+    m_display->clearOverlayData(QStringLiteral("CoarseMatchOverlay"));
+
+    m_coarseWatcher.setFuture(QtConcurrent::run([image, model, searchRect, groundTruthPath]() {
+        CoarseMatchUiResult uiResult;
+        try {
+            const ShapeMatch::ShapeTemplateModel commonModel = toCoarseTemplateModel(model);
+            if (commonModel.empty()) {
+                uiResult.message = QStringLiteral("ShapeMatch V3 failed: model has no template points.");
+                return uiResult;
+            }
+            const cv::Mat searchImage = grayMatFromQImage(image);
+            if (searchImage.empty()) {
+                uiResult.message = QStringLiteral("ShapeMatch V3 failed: image conversion failed.");
+                return uiResult;
+            }
+
+            ShapeMatch::ShapeModelParametersV3 modelParameters;
+            modelParameters.gradientLow = 15.0f;
+            modelParameters.gradientHigh = 100.0f;
+            modelParameters.distanceFieldMaxDistancePx = 8.0f;
+            modelParameters.pyramidLevels = 4;
+            modelParameters.stage0PointCount = 48;
+            modelParameters.stage1PointCount = 128;
+            modelParameters.stage2PointCount = 256;
+            const ShapeMatch::ShapeModelV3 v3Model =
+                ShapeMatch::ShapeModelTrainerV3().fromTemplateModel(commonModel, modelParameters);
+
+            ShapeMatch::ShapeSearchParametersV3 searchParameters;
+            if (!searchRect.isEmpty()) {
+                searchParameters.searchRoi = cv::Rect(searchRect.x(), searchRect.y(),
+                                                      searchRect.width(), searchRect.height());
+            }
+            searchParameters.angleStartRadians = static_cast<float>(-ShapeMatch::kPi);
+            searchParameters.angleExtentRadians = static_cast<float>(2.0 * ShapeMatch::kPi);
+            searchParameters.angleStepRadians = static_cast<float>(ShapeMatch::kPi / 18.0);
+            searchParameters.minScore = 0.10f;
+            searchParameters.pyramidLevels = 4;
+            searchParameters.maxMatches = 20;
+            searchParameters.coarseTopK = 300;
+            searchParameters.safetyMode = ShapeMatch::SearchSafetyV3::Safe;
+            searchParameters.enableAvx2 = true;
+            searchParameters.enableMultithreading = true;
+            searchParameters.numThreads = 4;
+            searchParameters.enablePyramidRefinement = false;
+            searchParameters.enableSubpixelRefinement = true;
+            searchParameters.enableFinalVerification = false;
+            searchParameters.enableStatistics = true;
+            searchParameters.nmsDistance = 12.0f;
+            searchParameters.nmsAngleRadians = static_cast<float>(ShapeMatch::kPi / 18.0);
+
+            ShapeMatch::ShapeMatchStatisticsV3 statistics;
+            ShapeMatch::ShapeMatcherV3 matcher;
+            const std::vector<ShapeMatch::MatchResultV3> matches =
+                matcher.find(searchImage, v3Model, searchParameters, &statistics);
+
+            std::vector<ShapeMatch::GroundTruthInstance> groundTruth;
+            if (!groundTruthPath.isEmpty()) {
+                const ShapeMatch::VisionProGroundTruthReadResult gtRead =
+                    ShapeMatch::VisionProGroundTruthReader().read(groundTruthPath.toStdString());
+                if (!gtRead.ok()) {
+                    uiResult.message = QStringLiteral("ShapeMatch V3 GT diagnostic failed: %1")
+                        .arg(QString::fromStdString(gtRead.error));
+                    return uiResult;
+                }
+                groundTruth = gtRead.instances;
+            }
+            ShapeMatch::ShapeMatchV3DiagnosticReport diagnostic =
+                ShapeMatch::ShapeMatchV3DiagnosticAnalyzer().analyze(
+                    searchImage, v3Model, searchParameters, statistics, matches, groundTruth);
+            diagnostic.imageName = groundTruthPath.isEmpty()
+                ? std::string("ui_current_image")
+                : QFileInfo(groundTruthPath).fileName().toStdString();
+            diagnostic.templateName = commonModel.templateId;
+            const std::filesystem::path reportDir =
+                std::filesystem::path("data") / "shape_match" / "reports";
+            if (!ShapeMatch::ShapeMatchV3ReportWriter().write(diagnostic, reportDir)) {
+                uiResult.message = QStringLiteral("ShapeMatch V3 failed to write diagnostic reports.");
+                return uiResult;
+            }
+
+            if (matches.empty()) {
+                uiResult.message = QStringLiteral(
+                    "ShapeMatch V3 produced no candidates. totalMs=%1 responseMs=%2 coarseMs=%3 "
+                    "evaluated=%4 stage0=%5 stage1=%6 stage2=%7; GT=%8/%9; "
+                    "reports=data/shape_match/reports")
+                    .arg(statistics.totalTimeMs, 0, 'f', 1)
+                    .arg(statistics.responseMapTimeMs, 0, 'f', 1)
+                    .arg(statistics.coarseSearchTimeMs, 0, 'f', 1)
+                    .arg(static_cast<qulonglong>(statistics.evaluatedCandidates))
+                    .arg(static_cast<qulonglong>(statistics.rejectedAtStage0))
+                    .arg(static_cast<qulonglong>(statistics.rejectedAtStage1))
+                    .arg(static_cast<qulonglong>(statistics.rejectedAtStage2))
+                    .arg(diagnostic.detectedCount)
+                    .arg(diagnostic.gtCount);
+                return uiResult;
+            }
+
+            uiResult.overlay = buildShapeMatchV3Overlay(commonModel, matches, 20);
+            uiResult.ok = !uiResult.overlay.empty();
+            const ShapeMatch::MatchResultV3& top = matches.front();
+            const QString roiText = searchRect.isEmpty()
+                ? QStringLiteral("full image")
+                : QStringLiteral("searchRoi=(%1,%2,%3,%4)")
+                    .arg(searchRect.x()).arg(searchRect.y())
+                    .arg(searchRect.width()).arg(searchRect.height());
+            uiResult.message = QStringLiteral(
+                "ShapeMatch V3 done. %1 top1 x=%2 y=%3 theta=%4 score=%5 matches=%6 "
+                "totalMs=%7 responseMs=%8 viewsMs=%9 coarseMs=%10 trackMs=%11 "
+                "candidates=%12 avx2Blocks=%13 scalarBlocks=%14 reject=[%15,%16,%17] full=%18 "
+                "avx512Blocks=%19 GT=%20/%21; reports=data/shape_match/reports")
+                .arg(roiText)
+                .arg(top.pose.x, 0, 'f', 1)
+                .arg(top.pose.y, 0, 'f', 1)
+                .arg(top.pose.thetaDeg(), 0, 'f', 2)
+                .arg(top.score, 0, 'f', 3)
+                .arg(static_cast<int>(matches.size()))
+                .arg(statistics.totalTimeMs, 0, 'f', 1)
+                .arg(statistics.responseMapTimeMs, 0, 'f', 1)
+                .arg(statistics.angleViewTimeMs, 0, 'f', 1)
+                .arg(statistics.coarseSearchTimeMs, 0, 'f', 1)
+                .arg(statistics.pyramidTrackTimeMs, 0, 'f', 1)
+                .arg(static_cast<qulonglong>(statistics.evaluatedCandidates))
+                .arg(static_cast<qulonglong>(statistics.avx2Blocks))
+                .arg(static_cast<qulonglong>(statistics.scalarBlocks))
+                .arg(static_cast<qulonglong>(statistics.rejectedAtStage0))
+                .arg(static_cast<qulonglong>(statistics.rejectedAtStage1))
+                .arg(static_cast<qulonglong>(statistics.rejectedAtStage2))
+                .arg(static_cast<qulonglong>(statistics.fullyEvaluated))
+                .arg(static_cast<qulonglong>(statistics.avx512Blocks))
+                .arg(diagnostic.detectedCount)
+                .arg(diagnostic.gtCount);
+        } catch (const std::exception& error) {
+            uiResult.message = QStringLiteral("ShapeMatch V3 failed: %1")
+                .arg(QString::fromUtf8(error.what()));
+        }
+        return uiResult;
     }));
 }
 

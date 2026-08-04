@@ -28,6 +28,8 @@ struct ShapeMatchEvalConfig
     double multiTargetAngleCostWeight = 0.50;
     double xyOkThresholdPx = 5.0;
     double angleOkThresholdDeg = 5.0;
+    bool enableAnglePeriodEquivalence = false;
+    double angleEquivalencePeriodDeg = 180.0;
     double scaleOkThreshold = 0.02;
     bool enablePolarityCheck = true;
     bool enableOrientationCheck = true;

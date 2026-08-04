@@ -91,6 +91,8 @@ public:
     Q_INVOKABLE void enableSearchRoi();
     Q_INVOKABLE void resetSearchRoi();
     Q_INVOKABLE void runCoarseMatch();
+    Q_INVOKABLE void runPipelineV2Match();
+    Q_INVOKABLE void runShapeMatchV3();
 
     void setShowAllEdges(bool enabled);
     void setShowStablePoints(bool enabled);

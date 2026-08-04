@@ -88,6 +88,20 @@ Item {
                     onClicked: shapeModelDebug.runCoarseMatch()
                 }
 
+                Button {
+                    width: parent.width
+                    text: shapeModelDebug.coarseMatchingRunning ? "PipelineV2 Running..." : "Run PipelineV2"
+                    enabled: !shapeModelDebug.coarseMatchingRunning
+                    onClicked: shapeModelDebug.runPipelineV2Match()
+                }
+
+                Button {
+                    width: parent.width
+                    text: shapeModelDebug.coarseMatchingRunning ? "ShapeMatch V3 Running..." : "Run ShapeMatch V3"
+                    enabled: !shapeModelDebug.coarseMatchingRunning
+                    onClicked: shapeModelDebug.runShapeMatchV3()
+                }
+
                 Item {
                     id: coarseProgress
                     width: parent.width

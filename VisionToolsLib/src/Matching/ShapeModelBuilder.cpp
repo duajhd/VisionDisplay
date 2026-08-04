@@ -178,15 +178,33 @@ void computeGradients(const cv::Mat& gray, const ShapeModelParams& params, Level
     cv::magnitude(work->ix, work->iy, work->mag);
 }
 
-double percentile(std::vector<double> values, double ratio)
+double gradientPercentile(const cv::Mat& magnitude, double minimum, double ratio)
 {
-    if (values.empty()) {
-        return 0.0;
-    }
+    cv::Mat validMask;
+    cv::compare(magnitude, minimum, validMask, cv::CMP_GE);
+    const int validCount = cv::countNonZero(validMask);
+    if (validCount <= 0) return minimum;
+    double maximum = minimum;
+    cv::minMaxLoc(magnitude, nullptr, &maximum, nullptr, nullptr, validMask);
+    if (!(maximum > minimum)) return minimum;
+
+    constexpr int binCount = 512;
+    const float range[] = {0.0f, static_cast<float>(maximum) + 1.0f};
+    const float* ranges[] = {range};
+    const int channels[] = {0};
+    const int histogramSize[] = {binCount};
+    cv::Mat histogram;
+    cv::calcHist(&magnitude, 1, channels, validMask, histogram, 1,
+                 histogramSize, ranges, true, false);
     ratio = clampDouble(ratio, 0.0, 1.0);
-    const size_t index = static_cast<size_t>(std::round(ratio * static_cast<double>(values.size() - 1)));
-    std::nth_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(index), values.end());
-    return values[index];
+    const int target = std::max(1, static_cast<int>(std::ceil(ratio * validCount)));
+    int cumulative = 0;
+    for (int bin = 0; bin < binCount; ++bin) {
+        cumulative += static_cast<int>(std::lround(histogram.at<float>(bin)));
+        if (cumulative >= target)
+            return (static_cast<double>(bin + 1) / binCount) * range[1];
+    }
+    return maximum;
 }
 
 std::vector<CandidatePoint> extractCandidates(const LevelWork& work,
@@ -197,61 +215,53 @@ std::vector<CandidatePoint> extractCandidates(const LevelWork& work,
                                               const Eigen::Vector2d& originImage,
                                               const ShapeModelParams& params)
 {
-    std::vector<double> magnitudes;
-    magnitudes.reserve(static_cast<size_t>(work.mag.cols * work.mag.rows));
-    for (int y = 1; y < work.mag.rows - 1; ++y) {
-        for (int x = 1; x < work.mag.cols - 1; ++x) {
-            const double m = work.mag.at<float>(y, x);
-            if (m >= params.minGradMag) {
-                magnitudes.push_back(m);
-            }
-        }
-    }
-
-    const double high = std::max(params.minGradMag, percentile(magnitudes, params.highThresholdPercentile));
+    const double high = std::max(params.minGradMag,
+        gradientPercentile(work.mag, params.minGradMag, params.highThresholdPercentile));
     const double low = std::max(params.minGradMag, high * clampDouble(params.lowThresholdRatio, 0.0, 1.0));
 
+    cv::Mat blurred8;
+    work.blurred.convertTo(blurred8, CV_8U);
+    cv::Mat edgeMask;
+    // work.mag is based on Scharr scaled by 1/32, while Canny's aperture-3
+    // Sobel response is approximately eight times larger for an ideal step.
+    cv::Canny(blurred8, edgeMask, low * 8.0, high * 8.0, 3, true);
+    std::vector<cv::Point> edgePixels;
+    cv::findNonZero(edgeMask, edgePixels);
+
     std::vector<CandidatePoint> candidates;
-    for (int y = 1; y < work.mag.rows - 1; ++y) {
-        for (int x = 1; x < work.mag.cols - 1; ++x) {
-            const double gx = work.ix.at<float>(y, x);
-            const double gy = work.iy.at<float>(y, x);
-            const double m0 = work.mag.at<float>(y, x);
-            if (m0 < low || m0 <= eps) {
-                continue;
-            }
+    candidates.reserve(edgePixels.size());
+    for (const cv::Point& pixel : edgePixels) {
+        const int x = pixel.x;
+        const int y = pixel.y;
+        if (x <= 0 || y <= 0 || x + 1 >= work.mag.cols || y + 1 >= work.mag.rows) continue;
+        const double gx = work.ix.at<float>(y, x);
+        const double gy = work.iy.at<float>(y, x);
+        const double m0 = work.mag.at<float>(y, x);
+        if (m0 <= eps) continue;
+        const Eigen::Vector2d grad(gx, gy);
+        const Eigen::Vector2d normal = normalized(grad, Eigen::Vector2d::UnitY());
+        const double mm = bilinearAt(work.mag, x - normal.x(), y - normal.y());
+        const double mp = bilinearAt(work.mag, x + normal.x(), y + normal.y());
+        const double denom = mm - 2.0 * m0 + mp;
+        const double offset = std::abs(denom) > eps ? 0.5 * (mm - mp) / denom : 0.0;
+        if (!std::isfinite(offset) || std::abs(offset) > params.maxSubpixelOffset) continue;
 
-            const Eigen::Vector2d grad(gx, gy);
-            const Eigen::Vector2d normal = normalized(grad, Eigen::Vector2d::UnitY());
-            const double mm = bilinearAt(work.mag, x - normal.x(), y - normal.y());
-            const double mp = bilinearAt(work.mag, x + normal.x(), y + normal.y());
-            if (m0 < mm || m0 < mp) {
-                continue;
-            }
-
-            const double denom = mm - 2.0 * m0 + mp;
-            const double offset = std::abs(denom) > eps ? 0.5 * (mm - mp) / denom : 0.0;
-            if (!std::isfinite(offset) || std::abs(offset) > params.maxSubpixelOffset) {
-                continue;
-            }
-
-            CandidatePoint candidate;
-            candidate.x = x;
-            candidate.y = y;
-            candidate.point.level = levelIndex;
-            candidate.point.localPos = Eigen::Vector2d(x + offset * normal.x(), y + offset * normal.y());
-            candidate.point.imagePos = roiOffset + candidate.point.localPos / scale;
-            candidate.point.modelPos = candidate.point.imagePos - originImage;
-            candidate.point.pos = candidate.point.modelPos;
-            candidate.point.gradient = grad;
-            candidate.point.gradMag = m0;
-            candidate.point.normal = normal;
-            candidate.point.tangent = Eigen::Vector2d(-normal.y(), normal.x());
-            candidate.point.response = m0;
-            candidate.point.subpixelOffset = offset;
-            candidate.point.subpixelScore = std::max(0.0, m0 - 0.5 * (mm + mp));
-            candidates.push_back(candidate);
-        }
+        CandidatePoint candidate;
+        candidate.x = x;
+        candidate.y = y;
+        candidate.point.level = levelIndex;
+        candidate.point.localPos = Eigen::Vector2d(x + offset * normal.x(), y + offset * normal.y());
+        candidate.point.imagePos = roiOffset + candidate.point.localPos / scale;
+        candidate.point.modelPos = candidate.point.imagePos - originImage;
+        candidate.point.pos = candidate.point.modelPos;
+        candidate.point.gradient = grad;
+        candidate.point.gradMag = m0;
+        candidate.point.normal = normal;
+        candidate.point.tangent = Eigen::Vector2d(-normal.y(), normal.x());
+        candidate.point.response = m0;
+        candidate.point.subpixelOffset = offset;
+        candidate.point.subpixelScore = std::max(0.0, m0 - 0.5 * (mm + mp));
+        candidates.push_back(candidate);
     }
     return candidates;
 }
@@ -300,6 +310,7 @@ std::vector<EdgeChain> buildChains(const std::vector<CandidatePoint>& candidates
     }
 
     std::vector<char> visited(candidates.size(), 0);
+    std::vector<char> inOrdered(candidates.size(), 0);
     std::vector<EdgeChain> chains;
     for (int seed = 0; seed < static_cast<int>(candidates.size()); ++seed) {
         if (visited[static_cast<size_t>(seed)]) {
@@ -346,10 +357,11 @@ std::vector<EdgeChain> buildChains(const std::vector<CandidatePoint>& candidates
         int current = start;
         while (current >= 0) {
             ordered.push_back(current);
+            inOrdered[static_cast<size_t>(current)] = 1;
             int best = -1;
             double bestScore = std::numeric_limits<double>::max();
             for (int next : adjacency[static_cast<size_t>(current)]) {
-                if (next == previous || std::find(ordered.begin(), ordered.end(), next) != ordered.end()) {
+                if (next == previous || inOrdered[static_cast<size_t>(next)]) {
                     continue;
                 }
                 const Eigen::Vector2d delta = candidates[static_cast<size_t>(next)].point.imagePos
@@ -364,10 +376,12 @@ std::vector<EdgeChain> buildChains(const std::vector<CandidatePoint>& candidates
             current = best;
         }
         for (int index : component) {
-            if (std::find(ordered.begin(), ordered.end(), index) == ordered.end()) {
+            if (!inOrdered[static_cast<size_t>(index)]) {
                 ordered.push_back(index);
+                inOrdered[static_cast<size_t>(index)] = 1;
             }
         }
+        for (int index : ordered) inOrdered[static_cast<size_t>(index)] = 0;
 
         EdgeChain chain;
         chain.id = static_cast<int>(chains.size());
@@ -413,8 +427,8 @@ void computeChainAttributes(EdgeChain* chain, const LevelWork& work, const Shape
             point.isStable = false;
         }
 
-        const double minus = bilinearAt(work.blurred, point.imagePos.x() - point.normal.x(), point.imagePos.y() - point.normal.y());
-        const double plus = bilinearAt(work.blurred, point.imagePos.x() + point.normal.x(), point.imagePos.y() + point.normal.y());
+        const double minus = bilinearAt(work.blurred, point.localPos.x() - point.normal.x(), point.localPos.y() - point.normal.y());
+        const double plus = bilinearAt(work.blurred, point.localPos.x() + point.normal.x(), point.localPos.y() + point.normal.y());
         point.contrast = plus - minus;
         if (params.usePolarity) {
             point.polarityReliable = std::abs(point.contrast) >= params.minContrast;
