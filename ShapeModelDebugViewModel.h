@@ -2,7 +2,9 @@
 
 #include "ShapeModelOverlayBuilder.h"
 #include "shape_match/coarse/CoarseMatchReport.h"
+#include "shape_match/core/ShapeTemplateModel.h"
 #include "shape_match/overlay/ShapeMatchOverlayData.h"
+#include "shape_match/pipeline_v3/ShapeMatchV3Types.h"
 #include "VisionTools/Matching/ShapeTemplateModel.h"
 
 #include <QImage>
@@ -13,6 +15,8 @@
 #include <QString>
 #include <QUrl>
 #include <QRectF>
+
+#include <memory>
 
 namespace VisionDisplay {
 class VisionDisplayItem;
@@ -152,6 +156,8 @@ private:
     QPointer<VisionDisplay::VisionDisplayItem> m_display;
     QImage m_templateImage;
     VisionTools::Matching::ShapeTemplateModel m_model;
+    std::shared_ptr<const ShapeMatch::ShapeTemplateModel> m_v3OverlayModel;
+    std::shared_ptr<const ShapeMatch::ShapeModelV3> m_v3Model;
     ShapeModelOverlayOptions m_options;
     int m_currentLevel = 0;
     QRectF m_modelRoi;

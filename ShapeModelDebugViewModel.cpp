@@ -11,7 +11,6 @@
 #include "shape_match/overlay/VisionDisplayOverlayAdapter.h"
 #include "shape_match/pipeline_v2/ShapeMatchPipelineV2.h"
 #include "shape_match/pipeline_v3/ResponseMapBuilderV3.h"
-#include "shape_match/pipeline_v3/ShapeMatchV3Diagnostic.h"
 #include "shape_match/pipeline_v3/ShapeMatcherV3.h"
 
 #include <QCoreApplication>
@@ -26,12 +25,24 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <filesystem>
 #include <numeric>
 
 namespace {
 
 constexpr const char* searchRoiId = "search_roi";
+
+ShapeMatch::ShapeModelParametersV3 shapeMatchV3ModelParameters()
+{
+    ShapeMatch::ShapeModelParametersV3 parameters;
+    parameters.gradientLow = 15.0f;
+    parameters.gradientHigh = 100.0f;
+    parameters.distanceFieldMaxDistancePx = 8.0f;
+    parameters.pyramidLevels = 4;
+    parameters.stage0PointCount = 48;
+    parameters.stage1PointCount = 128;
+    parameters.stage2PointCount = 256;
+    return parameters;
+}
 
 QString localPath(const QUrl& url)
 {
@@ -528,6 +539,8 @@ bool ShapeModelDebugViewModel::loadTemplateImage(const QUrl& url)
     m_modelRoiVisible = true;
     m_modelRoiEditable = true;
     m_model = VisionTools::Matching::ShapeTemplateModel();
+    m_v3OverlayModel.reset();
+    m_v3Model.reset();
     m_currentLevel = 0;
     m_lastCoarseSummary.clear();
     m_groundTruthPath.clear();
@@ -589,6 +602,23 @@ bool ShapeModelDebugViewModel::buildModelFromRoi()
     m_model = m_hasVisionProTrainingOrigin
         ? builder.build(m_templateImage, roi, params, m_visionProTrainingOrigin)
         : builder.build(m_templateImage, roi, params);
+    m_v3OverlayModel.reset();
+    m_v3Model.reset();
+    if (hasCoarseTemplateSource(m_model)) {
+        try {
+            auto overlayModel = std::make_shared<ShapeMatch::ShapeTemplateModel>(
+                toCoarseTemplateModel(m_model));
+            auto v3Model = std::make_shared<ShapeMatch::ShapeModelV3>(
+                ShapeMatch::ShapeModelTrainerV3().fromTemplateModel(
+                    *overlayModel, shapeMatchV3ModelParameters()));
+            m_v3OverlayModel = std::move(overlayModel);
+            m_v3Model = std::move(v3Model);
+        } catch (const std::exception& error) {
+            setStatus(QStringLiteral("Shape model built, but V3 template precomputation failed: %1")
+                          .arg(QString::fromUtf8(error.what())));
+            return false;
+        }
+    }
     m_lastCoarseSummary.clear();
     setCoarseMatchFinished(false);
     m_currentLevel = std::clamp(m_currentLevel, 0, std::max(0, levelCount() - 1));
@@ -650,7 +680,6 @@ void ShapeModelDebugViewModel::runCoarseMatch()
         setStatus(QStringLiteral("Build model from ROI first. Current ROI has no usable edge candidates."));
         return;
     }
-
     const QImage image = m_templateImage.copy();
     const VisionTools::Matching::ShapeTemplateModel model = m_model;
     const QString groundTruthPath = m_groundTruthPath;
@@ -1008,10 +1037,14 @@ void ShapeModelDebugViewModel::runShapeMatchV3()
         setStatus(QStringLiteral("Build model from ROI first. Current ROI has no usable edge candidates."));
         return;
     }
+    if (!m_v3Model || !m_v3OverlayModel) {
+        setStatus(QStringLiteral("Build model first to precompute the V3 template views."));
+        return;
+    }
 
     const QImage image = m_templateImage.copy();
-    const VisionTools::Matching::ShapeTemplateModel model = m_model;
-    const QString groundTruthPath = m_groundTruthPath;
+    const std::shared_ptr<const ShapeMatch::ShapeTemplateModel> overlayModel = m_v3OverlayModel;
+    const std::shared_ptr<const ShapeMatch::ShapeModelV3> v3Model = m_v3Model;
     const bool useSearchRoi = m_searchRoiEnabled && !m_searchRoi.isEmpty();
     const QRect searchRect = useSearchRoi
         ? boundedRoiRect(m_searchRoi, m_templateImage.size(), 32)
@@ -1027,30 +1060,14 @@ void ShapeModelDebugViewModel::runShapeMatchV3()
     setStatus(QStringLiteral("ShapeMatch V3 running..."));
     m_display->clearOverlayData(QStringLiteral("CoarseMatchOverlay"));
 
-    m_coarseWatcher.setFuture(QtConcurrent::run([image, model, searchRect, groundTruthPath]() {
+    m_coarseWatcher.setFuture(QtConcurrent::run([image, overlayModel, v3Model, searchRect]() {
         CoarseMatchUiResult uiResult;
         try {
-            const ShapeMatch::ShapeTemplateModel commonModel = toCoarseTemplateModel(model);
-            if (commonModel.empty()) {
-                uiResult.message = QStringLiteral("ShapeMatch V3 failed: model has no template points.");
-                return uiResult;
-            }
             const cv::Mat searchImage = grayMatFromQImage(image);
             if (searchImage.empty()) {
                 uiResult.message = QStringLiteral("ShapeMatch V3 failed: image conversion failed.");
                 return uiResult;
             }
-
-            ShapeMatch::ShapeModelParametersV3 modelParameters;
-            modelParameters.gradientLow = 15.0f;
-            modelParameters.gradientHigh = 100.0f;
-            modelParameters.distanceFieldMaxDistancePx = 8.0f;
-            modelParameters.pyramidLevels = 4;
-            modelParameters.stage0PointCount = 48;
-            modelParameters.stage1PointCount = 128;
-            modelParameters.stage2PointCount = 256;
-            const ShapeMatch::ShapeModelV3 v3Model =
-                ShapeMatch::ShapeModelTrainerV3().fromTemplateModel(commonModel, modelParameters);
 
             ShapeMatch::ShapeSearchParametersV3 searchParameters;
             if (!searchRect.isEmpty()) {
@@ -1078,51 +1095,22 @@ void ShapeModelDebugViewModel::runShapeMatchV3()
             ShapeMatch::ShapeMatchStatisticsV3 statistics;
             ShapeMatch::ShapeMatcherV3 matcher;
             const std::vector<ShapeMatch::MatchResultV3> matches =
-                matcher.find(searchImage, v3Model, searchParameters, &statistics);
-
-            std::vector<ShapeMatch::GroundTruthInstance> groundTruth;
-            if (!groundTruthPath.isEmpty()) {
-                const ShapeMatch::VisionProGroundTruthReadResult gtRead =
-                    ShapeMatch::VisionProGroundTruthReader().read(groundTruthPath.toStdString());
-                if (!gtRead.ok()) {
-                    uiResult.message = QStringLiteral("ShapeMatch V3 GT diagnostic failed: %1")
-                        .arg(QString::fromStdString(gtRead.error));
-                    return uiResult;
-                }
-                groundTruth = gtRead.instances;
-            }
-            ShapeMatch::ShapeMatchV3DiagnosticReport diagnostic =
-                ShapeMatch::ShapeMatchV3DiagnosticAnalyzer().analyze(
-                    searchImage, v3Model, searchParameters, statistics, matches, groundTruth);
-            diagnostic.imageName = groundTruthPath.isEmpty()
-                ? std::string("ui_current_image")
-                : QFileInfo(groundTruthPath).fileName().toStdString();
-            diagnostic.templateName = commonModel.templateId;
-            const std::filesystem::path reportDir =
-                std::filesystem::path("data") / "shape_match" / "reports";
-            if (!ShapeMatch::ShapeMatchV3ReportWriter().write(diagnostic, reportDir)) {
-                uiResult.message = QStringLiteral("ShapeMatch V3 failed to write diagnostic reports.");
-                return uiResult;
-            }
-
+                matcher.find(searchImage, *v3Model, searchParameters, &statistics);
             if (matches.empty()) {
                 uiResult.message = QStringLiteral(
                     "ShapeMatch V3 produced no candidates. totalMs=%1 responseMs=%2 coarseMs=%3 "
-                    "evaluated=%4 stage0=%5 stage1=%6 stage2=%7; GT=%8/%9; "
-                    "reports=data/shape_match/reports")
+                    "evaluated=%4 stage0=%5 stage1=%6 stage2=%7; report output disabled")
                     .arg(statistics.totalTimeMs, 0, 'f', 1)
                     .arg(statistics.responseMapTimeMs, 0, 'f', 1)
                     .arg(statistics.coarseSearchTimeMs, 0, 'f', 1)
                     .arg(static_cast<qulonglong>(statistics.evaluatedCandidates))
                     .arg(static_cast<qulonglong>(statistics.rejectedAtStage0))
                     .arg(static_cast<qulonglong>(statistics.rejectedAtStage1))
-                    .arg(static_cast<qulonglong>(statistics.rejectedAtStage2))
-                    .arg(diagnostic.detectedCount)
-                    .arg(diagnostic.gtCount);
+                    .arg(static_cast<qulonglong>(statistics.rejectedAtStage2));
                 return uiResult;
             }
 
-            uiResult.overlay = buildShapeMatchV3Overlay(commonModel, matches, 20);
+            uiResult.overlay = buildShapeMatchV3Overlay(*overlayModel, matches, 20);
             uiResult.ok = !uiResult.overlay.empty();
             const ShapeMatch::MatchResultV3& top = matches.front();
             const QString roiText = searchRect.isEmpty()
@@ -1134,7 +1122,7 @@ void ShapeModelDebugViewModel::runShapeMatchV3()
                 "ShapeMatch V3 done. %1 top1 x=%2 y=%3 theta=%4 score=%5 matches=%6 "
                 "totalMs=%7 responseMs=%8 viewsMs=%9 coarseMs=%10 trackMs=%11 "
                 "candidates=%12 avx2Blocks=%13 scalarBlocks=%14 reject=[%15,%16,%17] full=%18 "
-                "avx512Blocks=%19 GT=%20/%21; reports=data/shape_match/reports")
+                "avx512Blocks=%19; report output disabled")
                 .arg(roiText)
                 .arg(top.pose.x, 0, 'f', 1)
                 .arg(top.pose.y, 0, 'f', 1)
@@ -1153,9 +1141,7 @@ void ShapeModelDebugViewModel::runShapeMatchV3()
                 .arg(static_cast<qulonglong>(statistics.rejectedAtStage1))
                 .arg(static_cast<qulonglong>(statistics.rejectedAtStage2))
                 .arg(static_cast<qulonglong>(statistics.fullyEvaluated))
-                .arg(static_cast<qulonglong>(statistics.avx512Blocks))
-                .arg(diagnostic.detectedCount)
-                .arg(diagnostic.gtCount);
+                .arg(static_cast<qulonglong>(statistics.avx512Blocks));
         } catch (const std::exception& error) {
             uiResult.message = QStringLiteral("ShapeMatch V3 failed: %1")
                 .arg(QString::fromUtf8(error.what()));
@@ -1237,6 +1223,8 @@ bool ShapeModelDebugViewModel::loadVisionProGroundTruth(const QUrl& url)
     m_modelRoiVisible = true;
     m_modelRoiEditable = true;
     m_model = VisionTools::Matching::ShapeTemplateModel();
+    m_v3OverlayModel.reset();
+    m_v3Model.reset();
     m_currentLevel = 0;
     m_lastCoarseSummary.clear();
     setCoarseMatchFinished(false);
